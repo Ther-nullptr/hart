@@ -3,8 +3,10 @@ Comprehensive evaluation script for HART model
 Integrates multiple evaluation metrics and benchmarks
 """
 import argparse
+import copy
 import json
 import os
+import random
 import subprocess
 import sys
 import time
@@ -12,12 +14,25 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torchvision
 from PIL import Image
 from tqdm import tqdm
+from transformers import (
+    AutoConfig,
+    AutoModel,
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    set_seed,
+)
 
 # Import evaluation modules
 from compute_fid import calculate_fid_given_paths
 from compute_clip_score import CLIPEvaluator
+
+# Import HART modules
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from hart.modules.models.transformer import HARTForT2I
+from hart.utils import default_prompts, encode_prompts, llm_system_prompt, safety_check
 
 
 class HARTEvaluator:
@@ -28,7 +43,7 @@ class HARTEvaluator:
     
     def __init__(self, args):
         self.args = args
-        self.device = args.device
+        self.device = torch.device(args.device)
         self.results = {}
         
         # Initialize CLIP evaluator if needed
@@ -36,55 +51,176 @@ class HARTEvaluator:
             self.clip_evaluator = CLIPEvaluator(device=self.device)
         else:
             self.clip_evaluator = None
+        
+        # Initialize HART models if generation is enabled
+        if args.generate_samples:
+            self._load_hart_models()
+    
+    def _load_hart_models(self):
+        """Load HART model and related components"""
+        print("Loading HART models...")
+        
+        # Load main HART model
+        self.hart_model = AutoModel.from_pretrained(self.args.model_path)
+        self.hart_model = self.hart_model.to(self.device)
+        self.hart_model.eval()
+        
+        # Load EMA model if specified
+        if self.args.use_ema:
+            self.ema_model = copy.deepcopy(self.hart_model)
+            ema_path = os.path.join(self.args.model_path, "ema_model.bin")
+            if os.path.exists(ema_path):
+                self.ema_model.load_state_dict(torch.load(ema_path))
+            else:
+                print(f"Warning: EMA model not found at {ema_path}, using main model")
+                self.ema_model = self.hart_model
+        else:
+            self.ema_model = None
+        
+        # Load text model
+        self.text_tokenizer = AutoTokenizer.from_pretrained(self.args.text_model_path)
+        self.text_model = AutoModel.from_pretrained(self.args.text_model_path).to(self.device)
+        self.text_model.eval()
+        
+        # Load safety checker if specified
+        if self.args.shield_model_path:
+            self.safety_checker_tokenizer = AutoTokenizer.from_pretrained(self.args.shield_model_path)
+            self.safety_checker_model = AutoModelForCausalLM.from_pretrained(
+                self.args.shield_model_path,
+                device_map="auto",
+                torch_dtype=torch.bfloat16,
+            ).to(self.device)
+        else:
+            self.safety_checker_tokenizer = None
+            self.safety_checker_model = None
+    
+    def _save_images_batch(self, sample_imgs, prompts, output_dir, start_idx=0):
+        """Save a batch of generated images"""
+        sample_imgs_np = sample_imgs.mul_(255).cpu().numpy()
+        num_imgs = sample_imgs_np.shape[0]
+        os.makedirs(output_dir, exist_ok=True)
+        
+        for img_idx in range(num_imgs):
+            cur_img = sample_imgs_np[img_idx]
+            cur_img = cur_img.transpose(1, 2, 0).astype(np.uint8)
+            cur_img_store = Image.fromarray(cur_img)
+            output_path = os.path.join(output_dir, f"{start_idx + img_idx:06d}.png")
+            cur_img_store.save(output_path)
+    
+    def _generate_batch(self, batch_prompts, batch_idx=0):
+        """Generate images for a batch of prompts"""
+        # Safety check
+        if self.safety_checker_tokenizer and self.safety_checker_model:
+            for idx, prompt in enumerate(batch_prompts):
+                if safety_check.is_dangerous(
+                    self.safety_checker_tokenizer, self.safety_checker_model, prompt
+                ):
+                    batch_prompts[idx] = random.sample(default_prompts, 1)[0]
+                    print(f"Detected unsafe prompt in batch {batch_idx}, replacing with default prompt")
+        
+        # Encode prompts
+        (
+            context_tokens,
+            context_mask,
+            context_position_ids,
+            context_tensor,
+        ) = encode_prompts(
+            batch_prompts,
+            self.text_model,
+            self.text_tokenizer,
+            self.args.max_token_length,
+            llm_system_prompt,
+            self.args.use_llm_system_prompt,
+        )
+        
+        # Generate images
+        infer_func = (
+            self.ema_model.autoregressive_infer_cfg
+            if self.args.use_ema and self.ema_model is not None
+            else self.hart_model.autoregressive_infer_cfg
+        )
+        
+        output_imgs = infer_func(
+            B=context_tensor.size(0),
+            label_B=context_tensor,
+            cfg=self.args.cfg,
+            g_seed=self.args.seed,
+            more_smooth=self.args.more_smooth,
+            context_position_ids=context_position_ids,
+            context_mask=context_mask,
+        )
+        
+        return output_imgs
     
     def generate_samples(self):
         """
-        Generate samples using HART model
+        Generate samples using HART model with batched inference
         """
-        if self.args.sample_script and self.args.prompts_file:
-            print("Generating samples using HART model...")
+        if not self.args.prompts_file:
+            print("Sample generation skipped. No prompts file provided.")
+            return
             
-            # Read prompts
-            with open(self.args.prompts_file, 'r') as f:
-                if self.args.prompts_file.endswith('.json'):
-                    prompts_data = json.load(f)
-                    if isinstance(prompts_data, list):
-                        prompts = [item.get('prompt', str(item)) for item in prompts_data]
-                    else:
-                        prompts = list(prompts_data.values())
+        print("Generating samples using HART model with batched inference...")
+        
+        # Read prompts
+        with open(self.args.prompts_file, 'r') as f:
+            if self.args.prompts_file.endswith('.json'):
+                prompts_data = json.load(f)
+                if isinstance(prompts_data, list):
+                    prompts = [item.get('prompt', str(item)) for item in prompts_data]
                 else:
-                    prompts = [line.strip() for line in f.readlines()]
-            
-            # Create output directory
-            os.makedirs(self.args.output_dir, exist_ok=True)
-            
-            # Generate samples for each prompt
-            for i, prompt in enumerate(tqdm(prompts, desc="Generating samples")):
-                output_path = os.path.join(self.args.output_dir, f"{i:06d}.png")
-                
-                if os.path.exists(output_path) and not self.args.overwrite:
-                    continue
-                
-                # Run sample script
-                cmd = [
-                    'python', self.args.sample_script,
-                    '--model_path', self.args.model_path,
-                    '--text_model_path', self.args.text_model_path,
-                    '--prompt', prompt,
-                    '--sample_folder_dir', os.path.dirname(output_path),
-                    '--store_seperately'
-                ]
-                
-                if self.args.shield_model_path:
-                    cmd.extend(['--shield_model_path', self.args.shield_model_path])
-                
-                try:
-                    subprocess.run(cmd, check=True, capture_output=True)
-                    print(f"Generated sample {i+1}/{len(prompts)}")
-                except subprocess.CalledProcessError as e:
-                    print(f"Error generating sample {i}: {e}")
-        else:
-            print("Sample generation skipped. Using existing images.")
+                    prompts = list(prompts_data.values())
+            else:
+                prompts = [line.strip() for line in f.readlines()]
+        
+        # Limit samples if specified
+        if hasattr(self.args, 'max_samples') and self.args.max_samples > 0:
+            prompts = prompts[:self.args.max_samples]
+        
+        # Create output directory
+        os.makedirs(self.args.output_dir, exist_ok=True)
+        
+        # Process in batches
+        batch_size = getattr(self.args, 'generation_batch_size', 4)  # Default batch size for generation
+        total_batches = (len(prompts) + batch_size - 1) // batch_size
+        
+        start_time = time.time()
+        with torch.inference_mode():
+            with torch.autocast(
+                "cuda", enabled=True, dtype=torch.float16, cache_enabled=True
+            ):
+                for i in range(0, len(prompts), batch_size):
+                    batch_prompts = prompts[i:i + batch_size]
+                    batch_idx = i // batch_size
+                    
+                    # Check if all images in this batch already exist
+                    if not self.args.overwrite:
+                        batch_exists = all(
+                            os.path.exists(os.path.join(self.args.output_dir, f"{i+j:06d}.png"))
+                            for j in range(len(batch_prompts))
+                        )
+                        if batch_exists:
+                            print(f"Batch {batch_idx+1}/{total_batches} already exists, skipping...")
+                            continue
+                    
+                    try:
+                        # Generate batch
+                        print(f"Generating batch {batch_idx+1}/{total_batches} ({len(batch_prompts)} prompts)")
+                        batch_output_imgs = self._generate_batch(batch_prompts, batch_idx)
+                        
+                        # Save batch images
+                        self._save_images_batch(batch_output_imgs, batch_prompts, self.args.output_dir, start_idx=i)
+                        
+                        print(f"Completed batch {batch_idx+1}/{total_batches}")
+                        
+                    except Exception as e:
+                        print(f"Error generating batch {batch_idx+1}: {e}")
+                        continue
+        
+        total_time = time.time() - start_time
+        print(f"Generated {len(prompts)} images in {total_time:.2f}s")
+        print(f"Average time per image: {total_time/len(prompts):.2f}s")
+        print(f"Average time per batch: {total_time/total_batches:.2f}s")
     
     def evaluate_fid(self):
         """
@@ -395,9 +531,23 @@ def main():
     parser.add_argument('--generate_samples', action='store_true',
                         help='Generate samples using HART model')
     parser.add_argument('--sample_script', type=str, default='sample.py',
-                        help='Path to HART sample generation script')
+                        help='Path to HART sample generation script (deprecated - now using direct generation)')
     parser.add_argument('--overwrite', action='store_true',
                         help='Overwrite existing generated samples')
+    parser.add_argument('--generation_batch_size', type=int, default=4,
+                        help='Batch size for image generation')
+    parser.add_argument('--use_ema', action='store_true', default=True,
+                        help='Use EMA model for generation')
+    parser.add_argument('--max_token_length', type=int, default=300,
+                        help='Maximum token length for text encoding')
+    parser.add_argument('--use_llm_system_prompt', action='store_true', default=True,
+                        help='Use LLM system prompt')
+    parser.add_argument('--cfg', type=float, default=4.5,
+                        help='Classifier-free guidance scale')
+    parser.add_argument('--more_smooth', action='store_true', default=True,
+                        help='Turn on for more visually smooth samples')
+    parser.add_argument('--seed', type=int, default=1,
+                        help='Random seed for generation')
     
     # FID evaluation
     parser.add_argument('--reference_path', type=str,
