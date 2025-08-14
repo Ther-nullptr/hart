@@ -96,7 +96,8 @@ class HARTEvaluator:
     
     def _save_images_batch(self, sample_imgs, prompts, output_dir, start_idx=0):
         """Save a batch of generated images"""
-        sample_imgs_np = sample_imgs.mul_(255).cpu().numpy()
+        # Clone tensor to avoid inplace operation in inference mode
+        sample_imgs_np = sample_imgs.clone().mul(255).cpu().numpy()
         num_imgs = sample_imgs_np.shape[0]
         os.makedirs(output_dir, exist_ok=True)
         

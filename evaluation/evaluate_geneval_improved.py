@@ -391,7 +391,8 @@ class HARTGenEvalEvaluator:
     
     def _save_image(self, img_tensor: torch.Tensor, filepath: str):
         """Save image tensor to file."""
-        img_np = img_tensor.mul_(255).cpu().numpy()
+        # Clone tensor to avoid inplace operation in inference mode
+        img_np = img_tensor.clone().mul(255).cpu().numpy()
         img_np = img_np.transpose(1, 2, 0).astype(np.uint8)
         img_pil = Image.fromarray(img_np)
         img_pil.save(filepath)
