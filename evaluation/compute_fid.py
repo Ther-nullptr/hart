@@ -1,6 +1,6 @@
 """
-FID computation for HART model evaluation
-Adapted from SANA's PyTorch-FID implementation
+Improved FID computation for HART model evaluation
+Refactored with better structure, modularity and MJHQ-30K integration
 """
 import json
 import os
