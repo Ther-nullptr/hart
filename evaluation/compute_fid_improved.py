@@ -461,11 +461,31 @@ class HARTFIDEvaluator:
                         image_id = os.path.splitext(file)[0]
                         
                         # Handle different naming conventions
-                        if '_' in image_id:
-                            image_id = image_id.split('_')[0]
+                        original_image_id = image_id
                         
-                        if image_id in metadata:
-                            prompt = metadata[image_id]["prompt"]
+                        # Try different ID extraction strategies
+                        possible_ids = [image_id]  # Original filename without extension
+                        
+                        if '_' in image_id:
+                            # Handle format like: 000001_00 -> 000001
+                            possible_ids.append(image_id.split('_')[0])
+                        
+                        # Try to remove leading zeros: 000001 -> 1
+                        try:
+                            numeric_id = str(int(image_id.split('_')[0] if '_' in image_id else image_id))
+                            possible_ids.append(numeric_id)
+                        except ValueError:
+                            pass
+                        
+                        # Try to find a match in metadata
+                        found_id = None
+                        for candidate_id in possible_ids:
+                            if candidate_id in metadata:
+                                found_id = candidate_id
+                                break
+                        
+                        if found_id:
+                            prompt = metadata[found_id]["prompt"]
                             try:
                                 score = self._compute_single_clip_score(image_path, prompt)
                                 total_score += score
@@ -473,7 +493,59 @@ class HARTFIDEvaluator:
                             except Exception as e:
                                 print(f"Error computing CLIP score for {image_path}: {e}")
                         else:
-                            print(f"No prompt found for image {image_id}")
+                            print(f"No prompt found for image {original_image_id} (tried IDs: {possible_ids})")
+        
+        average_score = total_score / count if count > 0 else 0.0
+        return average_score, count
+    
+    def compute_clip_score_for_generated_images(
+        self,
+        generated_dir: str,
+        prompts: List[str]
+    ) -> Tuple[float, int]:
+        """Compute CLIP score for generated images using ordered prompts list."""
+        
+        if not self.clip_model:
+            self.initialize_clip_model()
+        
+        if not self.clip_model:
+            raise ValueError("CLIP model not available")
+        
+        total_score = 0
+        count = 0
+        
+        with torch.no_grad():
+            for root, _, files in os.walk(generated_dir):
+                for file in sorted(files):  # Sort to ensure consistent ordering
+                    if file.lower().endswith(('.png', '.jpg', '.jpeg')):
+                        image_path = os.path.join(root, file)
+                        # Extract image index from filename
+                        image_name = os.path.splitext(file)[0]
+                        
+                        try:
+                            # Handle different naming conventions
+                            if '_' in image_name:
+                                # Format: 000001_00.png -> index 1
+                                image_idx = int(image_name.split('_')[0])
+                            else:
+                                # Format: 000001.png -> index 1  
+                                image_idx = int(image_name)
+                            
+                            # Check if index is valid
+                            if 0 <= image_idx < len(prompts):
+                                prompt = prompts[image_idx]
+                                score = self._compute_single_clip_score(image_path, prompt)
+                                total_score += score
+                                count += 1
+                            else:
+                                print(f"Warning: Image index {image_idx} out of range for prompts (max: {len(prompts)-1})")
+                                
+                        except (ValueError, IndexError) as e:
+                            print(f"Warning: Could not parse image index from {file}: {e}")
+                            continue
+                        except Exception as e:
+                            print(f"Error computing CLIP score for {image_path}: {e}")
+                            continue
         
         average_score = total_score / count if count > 0 else 0.0
         return average_score, count
@@ -532,8 +604,9 @@ def evaluate_on_mjhq30k(
         metadata = dict(items)
         print(f"Limited to {len(metadata)} samples")
     
-    # Extract prompts
-    prompts = [data['prompt'] for data in metadata.values()]
+    # Extract prompts in consistent order (sort by keys for reproducibility)
+    sorted_items = sorted(metadata.items())
+    prompts = [data['prompt'] for key, data in sorted_items]
     
     # Generate images
     print(f"Generating {len(prompts)} images...")
@@ -558,7 +631,8 @@ def evaluate_on_mjhq30k(
     if enable_clip_score:
         print(f"Computing CLIP score...")
         try:
-            clip_score, clip_count = evaluator.compute_clip_score_from_metadata(gen_output_dir, metadata)
+            # Create a mapping from generated image index to prompts
+            clip_score, clip_count = evaluator.compute_clip_score_for_generated_images(gen_output_dir, prompts)
             print(f"CLIP Score: {clip_score:.4f} (computed on {clip_count} images)")
         except Exception as e:
             print(f"Error computing CLIP score: {e}")
@@ -721,11 +795,45 @@ def main():
         # Initialize CLIP model
         evaluator.initialize_clip_model(args.clip_model)
         
-        # Compute CLIP score
-        clip_score, clip_count = evaluator.compute_clip_score_from_metadata(
-            args.compute_clip_only[0],
-            metadata
-        )
+        # Compute CLIP score - try to determine the best method
+        # First check if images are numbered (generated) or hash-named (original MJHQ)
+        import os
+        sample_files = []
+        for root, _, files in os.walk(args.compute_clip_only[0]):
+            sample_files.extend([f for f in files[:3] if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
+            break
+        
+        # Check if files are numerically named (generated images)
+        has_numeric_names = False
+        if sample_files:
+            for file in sample_files:
+                name = os.path.splitext(file)[0]
+                try:
+                    # Check if it's numeric (with or without underscore)
+                    if '_' in name:
+                        int(name.split('_')[0])
+                    else:
+                        int(name)
+                    has_numeric_names = True
+                    break
+                except ValueError:
+                    continue
+        
+        if has_numeric_names:
+            print("Detected generated images (numeric naming), using ordered prompts method...")
+            # Convert metadata to ordered prompts list (sort by keys for consistency)
+            sorted_items = sorted(metadata.items())
+            prompts = [data['prompt'] for key, data in sorted_items]
+            clip_score, clip_count = evaluator.compute_clip_score_for_generated_images(
+                args.compute_clip_only[0],
+                prompts
+            )
+        else:
+            print("Detected hash-named images, using metadata mapping method...")
+            clip_score, clip_count = evaluator.compute_clip_score_from_metadata(
+                args.compute_clip_only[0],
+                metadata
+            )
         
         print(f"CLIP Score: {clip_score:.4f} (computed on {clip_count} images)")
         
