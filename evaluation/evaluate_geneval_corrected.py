@@ -822,13 +822,15 @@ def main():
     else:
         prompts_dir = args.prompts_dir
     
-    # Evaluate images
-    if not args.generate_images or args.evaluate_only:
+    # Evaluate images if requested
+    should_evaluate = args.evaluate_only or args.generate_images
+    
+    if should_evaluate:
         if args.detector_checkpoint is None:
-            print("Warning: --detector_checkpoint not provided.")
-            print("Please download Mask2Former checkpoint for evaluation.")
-            if not args.generate_images:
-                return
+            print("Error: --detector_checkpoint is required for evaluation.")
+            print("Please provide the path to Mask2Former checkpoint for evaluation.")
+            print("Use: --detector_checkpoint /path/to/checkpoint.pth")
+            return
         
         if args.detector_checkpoint and prompts_dir:
             print("Loading detection models...")
@@ -848,6 +850,12 @@ def main():
                 nms_threshold=args.nms_threshold,
                 position_threshold=args.position_threshold
             )
+            
+            # Save summary to JSON file
+            summary_file = os.path.join(args.output_dir, "geneval_summary.json")
+            with open(summary_file, 'w') as f:
+                json.dump(summary, f, indent=2)
+            print(f"Summary results saved to: {summary_file}")
             
             # Log to tracker if specified
             if args.log_geneval and args.report_to == "wandb":
