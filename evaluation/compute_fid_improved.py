@@ -41,6 +41,14 @@ except ImportError:
     print("Warning: cleanfid not available, using custom implementation")
     CLEANFID_AVAILABLE = False
 
+# Import CLIP for text-image similarity
+try:
+    import clip
+    CLIP_AVAILABLE = True
+except ImportError:
+    print("Warning: CLIP not available, CLIP score evaluation will be disabled")
+    CLIP_AVAILABLE = False
+
 from utils import tracker
 
 
@@ -98,6 +106,10 @@ class HARTFIDEvaluator:
         # Initialize FID computation model
         self.fid_model = None
         
+        # Initialize CLIP model for text-image similarity
+        self.clip_model = None
+        self.clip_preprocess = None
+        
     def _load_models(self, model_path: str, text_model_path: str):
         """Load HART and text models."""
         try:
@@ -131,6 +143,21 @@ class HARTFIDEvaluator:
         block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[dims]
         self.fid_model = InceptionV3([block_idx]).to(self.device)
         self.fid_model.eval()
+    
+    def initialize_clip_model(self, model_name: str = "ViT-L/14"):
+        """Initialize CLIP model for text-image similarity computation."""
+        if not CLIP_AVAILABLE:
+            print("Warning: CLIP not available, cannot initialize CLIP model")
+            return
+        
+        try:
+            self.clip_model, self.clip_preprocess = clip.load(model_name, device=self.device)
+            self.clip_model.eval()
+            print(f"CLIP model {model_name} loaded successfully")
+        except Exception as e:
+            print(f"Error loading CLIP model: {e}")
+            self.clip_model = None
+            self.clip_preprocess = None
     
     def generate_images(
         self,
@@ -360,6 +387,118 @@ class HARTFIDEvaluator:
         
         tr_covmean = np.trace(covmean)
         return diff.dot(diff) + np.trace(sigma1) + np.trace(sigma2) - 2 * tr_covmean
+    
+    def compute_clip_score(
+        self,
+        image_paths: List[str],
+        prompts: List[str]
+    ) -> Tuple[float, List[float]]:
+        """Compute CLIP score between images and their corresponding prompts."""
+        
+        if not self.clip_model:
+            self.initialize_clip_model()
+        
+        if not self.clip_model:
+            raise ValueError("CLIP model not available")
+        
+        if len(image_paths) != len(prompts):
+            raise ValueError("Number of images and prompts must match")
+        
+        scores = []
+        
+        with torch.no_grad():
+            for img_path, prompt in tqdm(zip(image_paths, prompts), desc="Computing CLIP scores"):
+                try:
+                    # Load and preprocess image
+                    image = Image.open(img_path).convert("RGB")
+                    image_input = self.clip_preprocess(image).unsqueeze(0).to(self.device)
+                    
+                    # Tokenize text
+                    text_input = clip.tokenize([prompt], truncate=True).to(self.device)
+                    
+                    # Compute features
+                    image_features = self.clip_model.encode_image(image_input)
+                    text_features = self.clip_model.encode_text(text_input)
+                    
+                    # Normalize features
+                    image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                    text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+                    
+                    # Compute cosine similarity
+                    similarity = (image_features @ text_features.T).item()
+                    scores.append(similarity)
+                    
+                except Exception as e:
+                    print(f"Error computing CLIP score for {img_path}: {e}")
+                    scores.append(0.0)
+        
+        average_score = np.mean(scores) if scores else 0.0
+        return average_score, scores
+    
+    def compute_clip_score_from_metadata(
+        self,
+        generated_dir: str,
+        metadata: dict,
+        image_extension: str = ".png"
+    ) -> Tuple[float, int]:
+        """Compute CLIP score using MJHQ metadata format."""
+        
+        if not self.clip_model:
+            self.initialize_clip_model()
+        
+        if not self.clip_model:
+            raise ValueError("CLIP model not available")
+        
+        total_score = 0
+        count = 0
+        
+        with torch.no_grad():
+            for root, _, files in os.walk(generated_dir):
+                for file in files:
+                    if file.lower().endswith(('.png', '.jpg', '.jpeg')):
+                        image_path = os.path.join(root, file)
+                        # Extract image ID from filename
+                        image_id = os.path.splitext(file)[0]
+                        
+                        # Handle different naming conventions
+                        if '_' in image_id:
+                            image_id = image_id.split('_')[0]
+                        
+                        if image_id in metadata:
+                            prompt = metadata[image_id]["prompt"]
+                            try:
+                                score = self._compute_single_clip_score(image_path, prompt)
+                                total_score += score
+                                count += 1
+                            except Exception as e:
+                                print(f"Error computing CLIP score for {image_path}: {e}")
+                        else:
+                            print(f"No prompt found for image {image_id}")
+        
+        average_score = total_score / count if count > 0 else 0.0
+        return average_score, count
+    
+    def _compute_single_clip_score(self, image_path: str, prompt: str) -> float:
+        """Compute CLIP score for a single image-text pair."""
+        
+        # Load and preprocess image
+        image = Image.open(image_path).convert("RGB")
+        image_input = self.clip_preprocess(image).unsqueeze(0).to(self.device)
+        
+        # Tokenize text
+        text_input = clip.tokenize([prompt], truncate=True).to(self.device)
+        
+        # Compute features
+        image_features = self.clip_model.encode_image(image_input)
+        text_features = self.clip_model.encode_text(text_input)
+        
+        # Normalize features
+        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+        
+        # Compute cosine similarity
+        similarity = (image_features @ text_features.T).item()
+        return similarity
 
 
 def evaluate_on_mjhq30k(
@@ -370,7 +509,8 @@ def evaluate_on_mjhq30k(
     category_filter: Optional[str] = None,
     max_samples: Optional[int] = None,
     cfg: float = 4.5,
-    seed: int = 1
+    seed: int = 1,
+    enable_clip_score: bool = True
 ) -> dict:
     """Evaluate HART on MJHQ-30K dataset."""
     
@@ -411,6 +551,22 @@ def evaluate_on_mjhq30k(
     print(f"Computing FID between {real_path} and {gen_output_dir}...")
     fid_score = evaluator.compute_fid(real_path, gen_output_dir)
     
+    # Compute CLIP Score if enabled
+    clip_score = 0.0
+    clip_count = 0
+    
+    if enable_clip_score:
+        print(f"Computing CLIP score...")
+        try:
+            clip_score, clip_count = evaluator.compute_clip_score_from_metadata(gen_output_dir, metadata)
+            print(f"CLIP Score: {clip_score:.4f} (computed on {clip_count} images)")
+        except Exception as e:
+            print(f"Error computing CLIP score: {e}")
+            clip_score = 0.0
+            clip_count = 0
+    else:
+        print("CLIP score computation disabled")
+    
     results = {
         'fid_score': fid_score,
         'num_samples': len(prompts),
@@ -423,12 +579,19 @@ def evaluate_on_mjhq30k(
         }
     }
     
+    # Add CLIP score results only if computed
+    if enable_clip_score:
+        results['clip_score'] = clip_score
+        results['clip_samples'] = clip_count
+    
     # Save results
     results_file = os.path.join(output_dir, "fid_results.json")
     with open(results_file, 'w') as f:
         json.dump(results, f, indent=2)
     
     print(f"FID Score: {fid_score:.4f}")
+    if enable_clip_score:
+        print(f"CLIP Score: {clip_score:.4f}")
     print(f"Results saved to {results_file}")
     
     return results
@@ -505,6 +668,16 @@ def main():
         help="Only compute FID between two directories"
     )
     
+    # CLIP score settings
+    parser.add_argument("--enable_clip_score", action="store_true", help="Enable CLIP score computation")
+    parser.add_argument("--clip_model", type=str, default="ViT-L/14", help="CLIP model architecture")
+    parser.add_argument(
+        "--compute_clip_only",
+        nargs=2,
+        metavar=("GEN_PATH", "METADATA_PATH"),
+        help="Only compute CLIP score for generated images with metadata"
+    )
+    
     # Experiment tracking
     parser.add_argument("--exp_name", type=str, default="fid_experiment", help="Experiment name")
     parser.add_argument("--report_to", type=str, default="none", help="Where to report metrics")
@@ -534,6 +707,35 @@ def main():
         
         return
     
+    # Direct CLIP score computation mode
+    if args.compute_clip_only:
+        evaluator = HARTFIDEvaluator(
+            device=args.device,
+            img_size=args.img_size
+        )
+        
+        # Load metadata
+        with open(args.compute_clip_only[1], 'r') as f:
+            metadata = json.load(f)
+        
+        # Initialize CLIP model
+        evaluator.initialize_clip_model(args.clip_model)
+        
+        # Compute CLIP score
+        clip_score, clip_count = evaluator.compute_clip_score_from_metadata(
+            args.compute_clip_only[0],
+            metadata
+        )
+        
+        print(f"CLIP Score: {clip_score:.4f} (computed on {clip_count} images)")
+        
+        # Log to tracker if specified
+        if args.report_to == "wandb":
+            result_dict = {f"{args.exp_name}_clip": clip_score}
+            tracker(args, result_dict, label="", pattern="epoch_step", metric="CLIP")
+        
+        return
+    
     # Full evaluation mode
     if not args.mjhq_metadata_path or not args.mjhq_images_path:
         if not args.model_path:
@@ -560,16 +762,21 @@ def main():
             category_filter=args.category_filter,
             max_samples=args.max_samples,
             cfg=args.cfg,
-            seed=args.seed
+            seed=args.seed,
+            enable_clip_score=args.enable_clip_score
         )
         
         # Log to tracker if specified
         if args.report_to == "wandb":
             result_dict = {args.exp_name: results['fid_score']}
-            tracker(args, result_dict, label="", pattern="epoch_step", metric="FID")
+            if 'clip_score' in results:
+                result_dict[f"{args.exp_name}_clip"] = results['clip_score']
+            tracker(args, result_dict, label="", pattern="epoch_step", metric="FID_CLIP")
         
         print(f"\nEvaluation completed successfully!")
         print(f"Final FID Score: {results['fid_score']:.4f}")
+        if 'clip_score' in results:
+            print(f"Final CLIP Score: {results['clip_score']:.4f}")
     else:
         print("No MJHQ dataset provided. Use --compute_fid_only for direct FID computation.")
 

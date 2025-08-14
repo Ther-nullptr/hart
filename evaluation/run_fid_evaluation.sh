@@ -38,6 +38,10 @@ IMG_SIZE=1024
 MAX_TOKEN_LENGTH=300
 NUM_WORKERS=4
 
+# CLIP score settings (optional)
+ENABLE_CLIP_SCORE="--enable_clip_score"  # Set to "" to disable CLIP score
+CLIP_MODEL="ViT-L/14"
+
 # Experiment tracking (optional)
 EXP_NAME="hart_fid_evaluation"
 REPORT_TO="none"  # Set to "wandb" to enable tracking
@@ -86,8 +90,10 @@ print_section() {
 
 # Parse command line arguments
 DIRECT_FID=false
+DIRECT_CLIP=false
 REAL_PATH=""
 GEN_PATH=""
+METADATA_PATH=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -95,6 +101,12 @@ while [[ $# -gt 0 ]]; do
             DIRECT_FID=true
             REAL_PATH="$2"
             GEN_PATH="$3"
+            shift 3
+            ;;
+        --direct-clip)
+            DIRECT_CLIP=true
+            GEN_PATH="$2"
+            METADATA_PATH="$3"
             shift 3
             ;;
         --model-path)
@@ -133,6 +145,18 @@ while [[ $# -gt 0 ]]; do
             DEVICE="$2"
             shift 2
             ;;
+        --enable-clip)
+            ENABLE_CLIP_SCORE="--enable_clip_score"
+            shift
+            ;;
+        --disable-clip)
+            ENABLE_CLIP_SCORE=""
+            shift
+            ;;
+        --clip-model)
+            CLIP_MODEL="$2"
+            shift 2
+            ;;
         --help|-h)
             echo "HART FID Evaluation Script"
             echo ""
@@ -142,6 +166,7 @@ while [[ $# -gt 0 ]]; do
             echo "Modes:"
             echo "  Default mode: Generate images and compute FID on MJHQ-30K"
             echo "  Direct FID:   ./run_fid_evaluation.sh --direct-fid /path/to/real /path/to/generated"
+            echo "  Direct CLIP:  ./run_fid_evaluation.sh --direct-clip /path/to/generated /path/to/metadata.json"
             echo ""
             echo "Options:"
             echo "  --model-path PATH         Path to HART model directory"
@@ -153,6 +178,9 @@ while [[ $# -gt 0 ]]; do
             echo "  --cfg SCALE               CFG scale (default: 4.5)"
             echo "  --seed N                  Random seed (default: 42)"
             echo "  --device DEVICE           Device (default: cuda)"
+            echo "  --enable-clip             Enable CLIP score computation"
+            echo "  --disable-clip            Disable CLIP score computation"
+            echo "  --clip-model MODEL        CLIP model (default: ViT-L/14)"
             echo "  --help, -h                Show this help"
             echo ""
             echo "Examples:"
@@ -161,6 +189,9 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "  # Direct FID between two directories"
             echo "  ./run_fid_evaluation.sh --direct-fid /path/to/real/images /path/to/generated/images"
+            echo ""
+            echo "  # Direct CLIP score computation"
+            echo "  ./run_fid_evaluation.sh --direct-clip /path/to/generated/images /path/to/metadata.json"
             echo ""
             echo "  # Quick test with limited samples"
             echo "  ./run_fid_evaluation.sh --max-samples 100 --category-filter people"
@@ -210,6 +241,43 @@ if [ "$DIRECT_FID" = true ]; then
     
     echo ""
     echo "✅ Direct FID computation completed!"
+    exit 0
+fi
+
+# =============================================================================
+# Direct CLIP Mode
+# =============================================================================
+
+if [ "$DIRECT_CLIP" = true ]; then
+    print_section "Direct CLIP Score Computation Mode"
+    
+    echo "Computing CLIP score for:"
+    echo "  Generated images: $GEN_PATH"
+    echo "  Metadata file: $METADATA_PATH"
+    echo ""
+    
+    # Validate paths
+    if ! check_dir "$GEN_PATH"; then
+        echo "Error: Generated images directory not found: $GEN_PATH"
+        exit 1
+    fi
+    
+    if ! check_file "$METADATA_PATH"; then
+        echo "Error: Metadata file not found: $METADATA_PATH"
+        exit 1
+    fi
+    
+    echo "Running direct CLIP score computation..."
+    python compute_fid_improved.py \
+        --compute_clip_only "$GEN_PATH" "$METADATA_PATH" \
+        --device "$DEVICE" \
+        --clip_model "$CLIP_MODEL" \
+        --exp_name "$EXP_NAME" \
+        --report_to "$REPORT_TO" \
+        --tracker_project_name "$TRACKER_PROJECT"
+    
+    echo ""
+    echo "✅ Direct CLIP score computation completed!"
     exit 0
 fi
 
@@ -298,7 +366,9 @@ FID_ARGS="--model_path \"$MODEL_PATH\" \
           --exp_name \"$EXP_NAME\" \
           --report_to \"$REPORT_TO\" \
           --tracker_project_name \"$TRACKER_PROJECT\" \
-          $USE_EMA"
+          --clip_model \"$CLIP_MODEL\" \
+          $USE_EMA \
+          $ENABLE_CLIP_SCORE"
 
 if [ -n "$CATEGORY_FILTER" ]; then
     FID_ARGS="$FID_ARGS --category_filter \"$CATEGORY_FILTER\""
@@ -328,6 +398,8 @@ if [ -f "$OUTPUT_DIR/fid_results.json" ]; then
 import json
 data = json.load(open('$OUTPUT_DIR/fid_results.json'))
 print(f'🎯 FID Score: {data[\"fid_score\"]:.4f}')
+if 'clip_score' in data:
+    print(f'🔗 CLIP Score: {data[\"clip_score\"]:.4f} (on {data.get(\"clip_samples\", 0)} images)')
 print()
 print('📋 Evaluation Details:')
 print(f'  • Samples Evaluated: {data[\"num_samples\"]}')
@@ -351,17 +423,30 @@ fi
 
 # Performance guidance
 echo ""
-echo "📈 FID Score Interpretation:"
-echo "  • < 10:  Excellent quality, very similar to real images"
-echo "  • 10-20: Good quality, minor differences from real images"
-echo "  • 20-50: Moderate quality, noticeable differences"
-echo "  • > 50:  Poor quality, significant differences"
+echo "📈 Score Interpretations:"
+echo "  FID Score:"
+echo "    • < 10:  Excellent quality, very similar to real images"
+echo "    • 10-20: Good quality, minor differences from real images"
+echo "    • 20-50: Moderate quality, noticeable differences"
+echo "    • > 50:  Poor quality, significant differences"
+if [ -n "$ENABLE_CLIP_SCORE" ]; then
+    echo "  CLIP Score:"
+    echo "    • > 0.3:  Excellent text-image alignment"
+    echo "    • 0.25-0.3: Good alignment with minor issues"
+    echo "    • 0.2-0.25: Moderate alignment"
+    echo "    • < 0.2:  Poor text-image correspondence"
+fi
 echo ""
 
 # Suggest next steps
 echo "🔄 Next Steps:"
 echo "  • For detailed analysis, examine generated images in: $OUTPUT_DIR/generated/"
-echo "  • To compare with other models, save this FID score: $(python -c "import json; print(json.load(open('$OUTPUT_DIR/fid_results.json'))['fid_score'])" 2>/dev/null || echo "N/A")"
+FID_RESULT=$(python -c "import json; print(json.load(open('$OUTPUT_DIR/fid_results.json'))['fid_score'])" 2>/dev/null || echo "N/A")
+echo "  • FID Score for comparison: $FID_RESULT"
+if [ -n "$ENABLE_CLIP_SCORE" ]; then
+    CLIP_RESULT=$(python -c "import json; data=json.load(open('$OUTPUT_DIR/fid_results.json')); print(data.get('clip_score', 'N/A'))" 2>/dev/null || echo "N/A")
+    echo "  • CLIP Score for comparison: $CLIP_RESULT"
+fi
 echo "  • For compositional reasoning evaluation, run: ./run_geneval_evaluation.sh"
 echo ""
 
