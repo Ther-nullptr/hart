@@ -26,6 +26,7 @@ CFG_SCALE=4.5
 SEED=42
 USE_EMA="--use_ema"
 MORE_SMOOTH="--more_smooth"
+USE_NUMERIC_NAMING=""  # Set to "--use_numeric_naming" to use numeric indices (default: use hash IDs)
 
 # FID evaluation settings
 CATEGORY_FILTER="people"  # Set to "" for all categories, or specify: people, animals, objects, etc.
@@ -157,6 +158,10 @@ while [[ $# -gt 0 ]]; do
             CLIP_MODEL="$2"
             shift 2
             ;;
+        --use-numeric-naming)
+            USE_NUMERIC_NAMING="--use_numeric_naming"
+            shift
+            ;;
         --help|-h)
             echo "HART FID Evaluation Script"
             echo ""
@@ -181,6 +186,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --enable-clip             Enable CLIP score computation"
             echo "  --disable-clip            Disable CLIP score computation"
             echo "  --clip-model MODEL        CLIP model (default: ViT-L/14)"
+            echo "  --use-numeric-naming      Use numeric indices for image naming (default: use hash IDs)"
             echo "  --help, -h                Show this help"
             echo ""
             echo "Examples:"
@@ -347,6 +353,7 @@ echo "  • CFG scale: $CFG_SCALE"
 echo "  • Random seed: $SEED"
 echo "  • Image size: ${IMG_SIZE}px"
 echo "  • Batch size: $BATCH_SIZE (generation), $FID_BATCH_SIZE (FID)"
+echo "  • Image naming: $([ -n "$USE_NUMERIC_NAMING" ] && echo "numeric indices" || echo "hash IDs (default)")"
 echo ""
 
 # Prepare FID arguments
@@ -368,7 +375,8 @@ FID_ARGS="--model_path \"$MODEL_PATH\" \
           --tracker_project_name \"$TRACKER_PROJECT\" \
           --clip_model \"$CLIP_MODEL\" \
           $USE_EMA \
-          $ENABLE_CLIP_SCORE"
+          $ENABLE_CLIP_SCORE \
+          $USE_NUMERIC_NAMING"
 
 if [ -n "$CATEGORY_FILTER" ]; then
     FID_ARGS="$FID_ARGS --category_filter \"$CATEGORY_FILTER\""

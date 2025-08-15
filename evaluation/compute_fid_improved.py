@@ -166,7 +166,8 @@ class HARTFIDEvaluator:
         cfg: float = 4.5,
         seed: Optional[int] = None,
         more_smooth: bool = True,
-        save_individually: bool = True
+        save_individually: bool = True,
+        custom_filenames: Optional[List[str]] = None
     ) -> List[str]:
         """Generate images from prompts using HART model."""
         
@@ -218,12 +219,18 @@ class HARTFIDEvaluator:
                 # Save image
                 if save_individually:
                     for j, img in enumerate(output_imgs):
-                        filename = f"{i:06d}_{j:02d}.png"
+                        if custom_filenames and i < len(custom_filenames):
+                            filename = f"{custom_filenames[i]}_{j:02d}.png"
+                        else:
+                            filename = f"{i:06d}_{j:02d}.png"
                         filepath = os.path.join(output_dir, filename)
                         self._save_image(img, filepath)
                         generated_files.append(filepath)
                 else:
-                    filename = f"{i:06d}.png"
+                    if custom_filenames and i < len(custom_filenames):
+                        filename = f"{custom_filenames[i]}.png"
+                    else:
+                        filename = f"{i:06d}.png"
                     filepath = os.path.join(output_dir, filename)
                     self._save_image(output_imgs[0], filepath)
                     generated_files.append(filepath)
@@ -582,7 +589,8 @@ def evaluate_on_mjhq30k(
     max_samples: Optional[int] = None,
     cfg: float = 4.5,
     seed: int = 1,
-    enable_clip_score: bool = True
+    enable_clip_score: bool = True,
+    use_numeric_naming: bool = False
 ) -> dict:
     """Evaluate HART on MJHQ-30K dataset."""
     
@@ -604,16 +612,23 @@ def evaluate_on_mjhq30k(
         metadata = dict(items)
         print(f"Limited to {len(metadata)} samples")
     
-    # Extract prompts in consistent order (sort by keys for reproducibility)
+    # Extract prompts and hash IDs in consistent order (sort by keys for reproducibility)
     sorted_items = sorted(metadata.items())
     prompts = [data['prompt'] for key, data in sorted_items]
+    hash_ids = [key for key, data in sorted_items]
     
-    # Generate images
-    print(f"Generating {len(prompts)} images...")
+    # Generate images with appropriate naming
     gen_output_dir = os.path.join(output_dir, "generated")
-    generated_files = evaluator.generate_images(
-        prompts, gen_output_dir, cfg=cfg, seed=seed
-    )
+    if use_numeric_naming:
+        print(f"Generating {len(prompts)} images with numeric naming...")
+        generated_files = evaluator.generate_images(
+            prompts, gen_output_dir, cfg=cfg, seed=seed
+        )
+    else:
+        print(f"Generating {len(prompts)} images with hash ID naming...")
+        generated_files = evaluator.generate_images(
+            prompts, gen_output_dir, cfg=cfg, seed=seed, custom_filenames=hash_ids
+        )
     
     # Compute FID
     if category_filter:
@@ -631,8 +646,12 @@ def evaluate_on_mjhq30k(
     if enable_clip_score:
         print(f"Computing CLIP score...")
         try:
-            # Create a mapping from generated image index to prompts
-            clip_score, clip_count = evaluator.compute_clip_score_for_generated_images(gen_output_dir, prompts)
+            if use_numeric_naming:
+                # Use indexed method for numeric naming
+                clip_score, clip_count = evaluator.compute_clip_score_for_generated_images(gen_output_dir, prompts)
+            else:
+                # Use metadata mapping method for hash naming
+                clip_score, clip_count = evaluator.compute_clip_score_from_metadata(gen_output_dir, metadata)
             print(f"CLIP Score: {clip_score:.4f} (computed on {clip_count} images)")
         except Exception as e:
             print(f"Error computing CLIP score: {e}")
@@ -725,6 +744,8 @@ def main():
     parser.add_argument("--seed", type=int, default=1, help="Random seed")
     parser.add_argument("--use_ema", action="store_true", help="Use EMA model")
     parser.add_argument("--more_smooth", action="store_true", help="More smooth generation")
+    parser.add_argument("--use_numeric_naming", action="store_true", 
+                        help="Use numeric indices for image naming (default: use MJHQ hash IDs)")
     
     # Technical settings
     parser.add_argument("--device", type=str, default="cuda", help="Device to use")
@@ -871,7 +892,8 @@ def main():
             max_samples=args.max_samples,
             cfg=args.cfg,
             seed=args.seed,
-            enable_clip_score=args.enable_clip_score
+            enable_clip_score=args.enable_clip_score,
+            use_numeric_naming=args.use_numeric_naming
         )
         
         # Log to tracker if specified
