@@ -64,6 +64,32 @@ except ImportError:
         ) @ value
 
 
+# Cache helper functions for VAR-style caching
+length2iteration = {
+    1:0, 4:1, 9:2, 16:3, 25:4, 36:5, 64:6, 100:7, 169:8, 256:9,
+}
+
+next_patch_size = {
+    1:2, 2:3, 3:4, 4:5, 5:6, 6:8, 8:10, 10:13, 13:16
+}
+
+def feature_interpolate(x, mode='bilinear', align_corners=True):
+    # input: [B, L1, C]
+    # output: [B, L2, C]
+    hw = int(math.sqrt(x.shape[1]))
+    if hw not in next_patch_size:
+        return x  # Return original if no interpolation needed
+    result = x.view(x.shape[0], hw, hw, -1)
+    result = torch.nn.functional.interpolate(
+        result.permute(0, 3, 1, 2), 
+        size=(next_patch_size[hw], next_patch_size[hw]), 
+        mode=mode, 
+        align_corners=align_corners
+    ).permute(0, 2, 3, 1)
+    result = result.view(result.shape[0], -1, result.shape[-1])
+    return result
+
+
 @functools.cache
 def get_position_ids_1d(batch_size, L, device):
     # [batch_size, L]
@@ -691,6 +717,10 @@ class FFN(nn.Module):
         drop=0.0,
         fused_if_available=True,
         act_func="gelu",
+        block_idx=0,
+        use_cache=False,
+        calibration=False,
+        threshold=0.7,
     ):
         super().__init__()
         self.fused_mlp_func = fused_mlp_func if fused_if_available else None
@@ -705,10 +735,19 @@ class FFN(nn.Module):
             raise NotImplementedError
         self.fc2 = nn.Linear(hidden_features, out_features)
         self.drop = nn.Dropout(drop, inplace=True) if drop > 0 else nn.Identity()
+        
+        # Cache parameters
+        self.block_idx = block_idx
+        self.use_cache = use_cache
+        self.calibration = calibration
+        self.threshold = threshold
+        self.temp_cache = None
+        self.iter = 0
 
-    def forward(self, x):
+    def forward(self, x, cache_similarity_mlp=None, cache_mlp=None):
+        L = x.shape[1]
         if self.fused_mlp_func is not None:
-            return self.drop(
+            result = self.drop(
                 self.fused_mlp_func(
                     x=x,
                     weight1=self.fc1.weight,
@@ -724,7 +763,36 @@ class FFN(nn.Module):
                 )
             )
         else:
-            return self.drop(self.fc2(self.act(self.fc1(x))))
+            if self.use_cache and cache_similarity_mlp is not None and cache_mlp is not None:
+                if self.calibration:
+                    result = self.drop(self.fc2(self.act(self.fc1(x))))
+                    if L == 1 and self.temp_cache is not None: 
+                        self.temp_cache = None
+                    if self.temp_cache is not None and L in length2iteration:
+                        cache = feature_interpolate(self.temp_cache)
+                        # compute token-level similarity
+                        cos_sim = torch.nn.functional.cosine_similarity(
+                            cache.view(-1, cache.shape[-1]), 
+                            result.view(-1, cache.shape[-1]), 
+                            dim=1
+                        ).mean().item()
+                        cache_similarity_mlp[self.block_idx][length2iteration[L]-1] = (
+                            cos_sim + cache_similarity_mlp[self.block_idx][length2iteration[L]-1] * self.iter
+                        ) / (self.iter + 1)
+                    self.temp_cache = result.clone()
+                else:
+                    if L in length2iteration and cache_similarity_mlp[self.block_idx][length2iteration[L]-1] > self.threshold:
+                        result = feature_interpolate(cache_mlp[self.block_idx])
+                    else:
+                        result = self.drop(self.fc2(self.act(self.fc1(x))))
+                    cache_mlp[self.block_idx] = None
+                    if L in length2iteration and cache_similarity_mlp[self.block_idx][length2iteration[L]] > self.threshold:
+                        cache_mlp[self.block_idx] = result.clone()
+                    else:
+                        cache_mlp[self.block_idx] = None
+            else:
+                result = self.drop(self.fc2(self.act(self.fc1(x))))
+        return result
 
     def extra_repr(self) -> str:
         return f"fused_mlp_func={self.fused_mlp_func is not None}"
@@ -765,6 +833,9 @@ class SelfAttention(nn.Module):
         proj_drop=0.0,
         attn_l2_norm=False,
         flash_if_available=True,
+        use_cache=False,
+        calibration=False,
+        threshold=0.7,
     ):
         super().__init__()
         assert embed_dim % num_heads == 0
@@ -802,14 +873,18 @@ class SelfAttention(nn.Module):
 
         # only used during inference
         self.caching, self.cached_k, self.cached_v = False, None, None
+        
+        # Cache parameters
+        self.use_cache = use_cache
+        self.calibration = calibration
+        self.threshold = threshold
+        self.temp_cache = None
+        self.iter = 0
 
     def kv_caching(self, enable: bool):
         self.caching, self.cached_k, self.cached_v = enable, None, None
 
-    # NOTE: attn_bias is None during inference because kv cache is enabled
-    def forward(
-        self, x, attn_bias, si=-1, context_position_ids=None, context_mask=None
-    ):
+    def forward_inner(self, x, attn_bias):
         B, L, C = x.shape
 
         qkv = F.linear(
@@ -882,9 +957,42 @@ class SelfAttention(nn.Module):
             )
 
         return self.proj_drop(self.proj(oup))
-        # attn = (q @ k.transpose(-2, -1)).add_(attn_bias + self.local_rpb())  # BHLc @ BHcL => BHLL
-        # attn = self.attn_drop(attn.softmax(dim=-1))
-        # oup = (attn @ v).transpose_(1, 2).reshape(B, L, -1)     # BHLL @ BHLc = BHLc => BLHc => BLC
+
+    # NOTE: attn_bias is None during inference because kv cache is enabled
+    def forward(
+        self, x, attn_bias, si=-1, context_position_ids=None, context_mask=None, cache_similarity_attn=None, cache_attn=None
+    ):
+        L = x.shape[1]
+        if self.use_cache and cache_similarity_attn is not None and cache_attn is not None:
+            if self.calibration:
+                result = self.forward_inner(x, attn_bias)
+                if L == 1 and self.temp_cache is not None: 
+                    self.temp_cache = None
+                    self.iter += 1
+                if self.temp_cache is not None and L in length2iteration:
+                    cache = feature_interpolate(self.temp_cache)
+                    # compute token-level similarity
+                    cos_sim = torch.nn.functional.cosine_similarity(
+                        cache.view(-1, cache.shape[-1]), 
+                        result.view(-1, result.shape[-1]), 
+                        dim=1
+                    ).mean().item()
+                    cache_similarity_attn[self.block_idx][length2iteration[L]-1] = (
+                        cos_sim + cache_similarity_attn[self.block_idx][length2iteration[L]-1] * self.iter
+                    ) / (self.iter + 1)
+                self.temp_cache = result.clone()
+            else:
+                if L == 256 or L == 169:
+                    result = feature_interpolate(cache_attn[self.block_idx])
+                else:
+                    result = self.forward_inner(x, attn_bias)
+                    cache_attn[self.block_idx] = None
+                if L == 169 or L == 100:
+                    cache_attn[self.block_idx] = result.clone()
+        else:
+            result = self.forward_inner(x, attn_bias)
+
+        return result
 
     def extra_repr(self) -> str:
         return f"using_flash={self.using_flash}, using_xform={self.using_xform}, attn_l2_norm={self.attn_l2_norm}"
@@ -1192,6 +1300,9 @@ class AdaLNSelfAttn(nn.Module):
         disable_aln=False,
         sep_aln_pooling_mode="max",
         use_cross_attn=False,
+        use_cache=False,
+        calibration=False,
+        threshold=0.7,
     ):
         super().__init__()
         self.block_idx, self.last_drop_p, self.C = block_idx, last_drop_p, embed_dim
@@ -1209,6 +1320,9 @@ class AdaLNSelfAttn(nn.Module):
                 proj_drop=drop,
                 attn_l2_norm=attn_l2_norm,
                 flash_if_available=flash_if_available,
+                use_cache=use_cache,
+                calibration=calibration,
+                threshold=threshold,
             )
         else:
             self.attn = LlamaAttention(
@@ -1231,6 +1345,10 @@ class AdaLNSelfAttn(nn.Module):
                 drop=drop,
                 fused_if_available=fused_if_available,
                 act_func=gpt2_mlp_act_func,
+                block_idx=block_idx,
+                use_cache=use_cache,
+                calibration=calibration,
+                threshold=threshold,
             )
         elif mlp_type == "llama":
             # MLP ratio = 4: mul 8 / 3
@@ -1288,6 +1406,10 @@ class AdaLNSelfAttn(nn.Module):
         context_position_ids=None,
         context_mask=None,
         m_maskgit=None,
+        cache_mlp=None,
+        cache_attn=None,
+        cache_similarity_mlp=None,
+        cache_similarity_attn=None,
     ):  # C: embed_dim, D: cond_dim
         # We achieve multi-token conditioning through LLM attention mask.
         if not self.disable_aln:
@@ -1308,6 +1430,8 @@ class AdaLNSelfAttn(nn.Module):
                     context_mask=context_mask,
                     si=si,
                     m_maskgit=m_maskgit,
+                    cache_similarity_attn=cache_similarity_attn,
+                    cache_attn=cache_attn,
                 ).mul_(gamma1)
             )
             if self.use_cross_attn:
@@ -1316,7 +1440,11 @@ class AdaLNSelfAttn(nn.Module):
                     x[:, cond_BD.size(1) :], cond_BD, None
                 )
             x = x + self.drop_path(
-                self.ffn(self.ln_wo_grad(x).mul(scale2.add(1)).add_(shift2)).mul(gamma2)
+                self.ffn(
+                    self.ln_wo_grad(x).mul(scale2.add(1)).add_(shift2),
+                    cache_similarity_mlp=cache_similarity_mlp,
+                    cache_mlp=cache_mlp
+                ).mul(gamma2)
             )  # this mul(gamma2) cannot be in-placed when FusedMLP is used
         else:
             if not self.shared_aln:
@@ -1328,6 +1456,8 @@ class AdaLNSelfAttn(nn.Module):
                         context_mask=context_mask,
                         si=si,
                         m_maskgit=m_maskgit,
+                        cache_similarity_attn=cache_similarity_attn,
+                        cache_attn=cache_attn,
                     )
                 )
                 if self.use_cross_attn:
@@ -1335,7 +1465,11 @@ class AdaLNSelfAttn(nn.Module):
                     x[:, cond_BD.size(1) :] += self.cross_attn(
                         x[:, cond_BD.size(1) :], cond_BD, None
                     )
-                x = x + self.drop_path(self.ffn(self.ln_wo_grad(x)))
+                x = x + self.drop_path(self.ffn(
+                    self.ln_wo_grad(x),
+                    cache_similarity_mlp=cache_similarity_mlp,
+                    cache_mlp=cache_mlp
+                ))
             else:
                 # cond_BD: [batch, 1, embed_dim]
                 condition = context_pooling(cond_BD, context_mask, mode="avg")
@@ -1352,6 +1486,8 @@ class AdaLNSelfAttn(nn.Module):
                         context_mask=context_mask,
                         si=si,
                         m_maskgit=m_maskgit,
+                        cache_similarity_attn=cache_similarity_attn,
+                        cache_attn=cache_attn,
                     ).mul_(gamma1)
                 )
                 if self.use_cross_attn:
@@ -1360,9 +1496,11 @@ class AdaLNSelfAttn(nn.Module):
                         x[:, cond_BD.size(1) :], cond_BD, None
                     )
                 x = x + self.drop_path(
-                    self.ffn(self.ln_wo_grad(x).mul(scale2.add(1)).add_(shift2)).mul(
-                        gamma2
-                    )
+                    self.ffn(
+                        self.ln_wo_grad(x).mul(scale2.add(1)).add_(shift2),
+                        cache_similarity_mlp=cache_similarity_mlp,
+                        cache_mlp=cache_mlp
+                    ).mul(gamma2)
                 )
         return x
 

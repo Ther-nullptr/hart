@@ -234,6 +234,9 @@ class HARTForT2I(PreTrainedModel):
                     disable_aln=self.disable_aln,
                     sep_aln_pooling_mode=self.sep_aln_pooling_mode,
                     use_cross_attn=self.use_cross_attn,
+                    use_cache=config.use_cache,
+                    calibration=config.calibration,
+                    threshold=config.threshold,
                 )
                 for block_idx in range(depth)
             ]
@@ -278,6 +281,23 @@ class HARTForT2I(PreTrainedModel):
             sampler=config.sampler,
         )
         self.diffusion_batch_mul = config.diffusion_batch_mul
+        
+        # Initialize caching mechanism
+        self.use_cache = config.use_cache
+        self.calibration = config.calibration
+        self.sim_path = config.sim_path
+        self.cache_mlp = [None] * depth
+        self.cache_attn = [None] * depth
+        self.cache_similarity_mlp = [[0.0] * 10 for _ in range(depth)]  # 10 iterations
+        self.cache_similarity_attn = [[0.0] * 10 for _ in range(depth)]
+        
+        # Load similarity data if path provided
+        if self.sim_path and os.path.exists(self.sim_path):
+            import pickle
+            with open(self.sim_path, 'rb') as f:
+                sim_data = pickle.load(f)
+                self.cache_similarity_mlp = sim_data.get('mlp', self.cache_similarity_mlp)
+                self.cache_similarity_attn = sim_data.get('attn', self.cache_similarity_attn)
 
     def get_logits(
         self,
@@ -382,7 +402,6 @@ class HARTForT2I(PreTrainedModel):
             # assert self.attn_bias_for_masking[:, :, last_L:cur_L, :cur_L].sum() == 0, f'AR with {(self.attn_bias_for_masking[:, :, last_L:cur_L, :cur_L] != 0).sum()} / {self.attn_bias_for_masking[:, :, last_L:cur_L, :cur_L].numel()} mask item'
             cond_BD_or_gss = self.shared_ada_lin(cond_BD)
             x = next_token_map
-            AdaLNSelfAttn.forward
             for b in self.blocks:
                 # Haotian: si used for position embed
                 x = b(
@@ -392,6 +411,10 @@ class HARTForT2I(PreTrainedModel):
                     si=si,
                     context_position_ids=context_position_ids,
                     context_mask=context_mask,
+                    cache_mlp=self.cache_mlp,
+                    cache_attn=self.cache_attn,
+                    cache_similarity_mlp=self.cache_similarity_mlp,
+                    cache_similarity_attn=self.cache_similarity_attn,
                 )
             logits_BlV = self.get_logits(x, cond_BD)
             if si == self.num_stages_minus_1:
@@ -645,7 +668,6 @@ class HARTForT2I(PreTrainedModel):
         cond_BD_or_gss = cond_BD_or_gss.to(dtype=main_type)
         attn_bias = attn_bias.to(dtype=main_type)
 
-        AdaLNSelfAttn.forward
         for i, b in enumerate(self.blocks):
             if self.gradient_checkpointing:
                 x_BLC = self._gradient_checkpointing_func(
@@ -665,6 +687,10 @@ class HARTForT2I(PreTrainedModel):
                     m_maskgit=mask_for_attn,
                     context_position_ids=context_position_ids,
                     context_mask=context_mask,
+                    cache_mlp=self.cache_mlp,
+                    cache_attn=self.cache_attn,
+                    cache_similarity_mlp=self.cache_similarity_mlp,
+                    cache_similarity_attn=self.cache_similarity_attn,
                 )
         # parallel generation of discrete and continuous tokens
         x_BLC_logits, last_layer_cond = (
@@ -804,6 +830,18 @@ class HARTForT2I(PreTrainedModel):
                 sab.ada_gss.data[:, :, :2].mul_(init_adaln_gamma)
 
         self.diffloss.initialize_weights()
+
+    def save_similarity_data(self):
+        """Save similarity data after calibration"""
+        if self.sim_path:
+            import pickle
+            sim_data = {
+                'mlp': self.cache_similarity_mlp,
+                'attn': self.cache_similarity_attn
+            }
+            with open(self.sim_path, 'wb') as f:
+                pickle.dump(sim_data, f)
+            print(f"Similarity data saved to {self.sim_path}")
 
     def extra_repr(self):
         return f"drop_path_rate={self.drop_path_rate:g}"

@@ -157,6 +157,10 @@ class HARTForT2IConfig(VARTransformerT2IConfig):
         sampler="iddpm",
         use_context_norm=False,
         context_norm_scale=1.0,
+        use_cache=False,
+        calibration=False,
+        threshold=0.7,
+        sim_path=None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -168,3 +172,7 @@ class HARTForT2IConfig(VARTransformerT2IConfig):
         self.diffusion_head_repeats = kwargs.get("diffusion_head_repeats", 1)
         self.use_context_norm = use_context_norm
         self.context_norm_scale = context_norm_scale
+        self.use_cache = use_cache
+        self.calibration = calibration
+        self.threshold = threshold
+        self.sim_path = sim_path

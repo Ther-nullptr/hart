@@ -76,7 +76,7 @@ def main(args):
     if args.prompt:
         prompts = [args.prompt]
     elif args.prompt_list:
-        prompts = args.prompts
+        prompts = args.prompt_list
     else:
         print(
             "No prompt is provided. Will randomly sample 4 prompts from default prompts."
@@ -92,43 +92,58 @@ def main(args):
                 f"Detected Unsafe prompt with index {idx}, will replace by one of default prompts."
             )
 
+    # Support batched inference - process prompts in batches
+    batch_size = getattr(args, 'batch_size', len(prompts))  # Default to process all at once
+    all_output_imgs = []
+    
     start_time = time.time()
     with torch.inference_mode():
         with torch.autocast(
             "cuda", enabled=True, dtype=torch.float16, cache_enabled=True
         ):
+            # Process prompts in batches
+            for i in range(0, len(prompts), batch_size):
+                batch_prompts = prompts[i:i + batch_size]
+                
+                (
+                    context_tokens,
+                    context_mask,
+                    context_position_ids,
+                    context_tensor,
+                ) = encode_prompts(
+                    batch_prompts,
+                    text_model,
+                    text_tokenizer,
+                    args.max_token_length,
+                    llm_system_prompt,
+                    args.use_llm_system_prompt,
+                )
 
-            (
-                context_tokens,
-                context_mask,
-                context_position_ids,
-                context_tensor,
-            ) = encode_prompts(
-                prompts,
-                text_model,
-                text_tokenizer,
-                args.max_token_length,
-                llm_system_prompt,
-                args.use_llm_system_prompt,
-            )
-
-            infer_func = (
-                ema_model.autoregressive_infer_cfg
-                if args.use_ema
-                else model.autoregressive_infer_cfg
-            )
-            output_imgs = infer_func(
-                B=context_tensor.size(0),
-                label_B=context_tensor,
-                cfg=args.cfg,
-                g_seed=args.seed,
-                more_smooth=args.more_smooth,
-                context_position_ids=context_position_ids,
-                context_mask=context_mask,
-            )
+                infer_func = (
+                    ema_model.autoregressive_infer_cfg
+                    if args.use_ema
+                    else model.autoregressive_infer_cfg
+                )
+                batch_output_imgs = infer_func(
+                    B=context_tensor.size(0),
+                    label_B=context_tensor,
+                    cfg=args.cfg,
+                    g_seed=args.seed,
+                    more_smooth=args.more_smooth,
+                    context_position_ids=context_position_ids,
+                    context_mask=context_mask,
+                )
+                all_output_imgs.append(batch_output_imgs)
+                
+                if len(prompts) > batch_size:  # Only print batch progress for large jobs
+                    print(f"Processed batch {i//batch_size + 1}/{(len(prompts) + batch_size - 1)//batch_size}")
+            
+            # Concatenate all batch results
+            output_imgs = torch.cat(all_output_imgs, dim=0)
 
     total_time = time.time() - start_time
-    print(f"Generate {len(prompts)} images take {total_time:2f}s.")
+    print(f"Generate {len(prompts)} images take {total_time:.2f}s.")
+    print(f"Average time per image: {total_time/len(prompts):.2f}s")
 
     save_images(
         output_imgs.clone(), args.sample_folder_dir, args.store_seperately, prompts
@@ -181,6 +196,12 @@ if __name__ == "__main__":
         help="Store image samples in a grid or separately, set to False by default.",
         action="store_true",
     )
+    # Cache arguments
+    parser.add_argument("--use_cache", action="store_true", help="Enable caching mechanism")
+    parser.add_argument("--calibration", action="store_true", help="Enable calibration mode for cache similarity computation")
+    parser.add_argument("--threshold", type=float, default=0.7, help="Similarity threshold for cache reuse")
+    parser.add_argument("--sim_path", type=str, default=None, help="Path to save/load similarity calibration data")
+    parser.add_argument("--batch_size", type=int, default=None, help="Batch size for inference. If not specified, processes all prompts at once")
     args = parser.parse_args()
 
     main(args)
