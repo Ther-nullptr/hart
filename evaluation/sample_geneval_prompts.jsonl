@@ -1,0 +1,20 @@
+{"prompt": "A red apple on a wooden table", "category": "object", "expected_objects": ["apple", "table"], "difficulty": "easy"}
+{"prompt": "Three cats sitting on a fence", "category": "count", "expected_count": {"cat": 3}, "difficulty": "medium"}
+{"prompt": "A blue car next to a yellow house", "category": "spatial", "expected_spatial": [["car", "next to", "house"]], "difficulty": "medium"}
+{"prompt": "A large green tree with small red flowers", "category": "attribute", "expected_attributes": {"tree": ["large", "green"], "flowers": ["small", "red"]}, "difficulty": "hard"}
+{"prompt": "Two white dogs playing in a park", "category": "color", "expected_colors": {"dog": "white"}, "expected_count": {"dog": 2}, "difficulty": "medium"}
+{"prompt": "A round clock on a square wall", "category": "shape", "expected_shapes": {"clock": "round", "wall": "square"}, "difficulty": "medium"}
+{"prompt": "A fluffy cat on a smooth marble floor", "category": "texture", "expected_textures": {"cat": "fluffy", "floor": "smooth"}, "difficulty": "hard"}
+{"prompt": "Five colorful balloons floating in the sky", "category": "count", "expected_count": {"balloon": 5}, "expected_objects": ["balloon", "sky"], "difficulty": "easy"}
+{"prompt": "A small brown dog under a big green umbrella", "category": "spatial", "expected_spatial": [["dog", "under", "umbrella"]], "expected_attributes": {"dog": ["small", "brown"], "umbrella": ["big", "green"]}, "difficulty": "hard"}
+{"prompt": "An orange cat sitting on top of a blue box", "category": "spatial", "expected_spatial": [["cat", "on top of", "box"]], "expected_colors": {"cat": "orange", "box": "blue"}, "difficulty": "medium"}
+{"prompt": "Four identical red roses in a white vase", "category": "count", "expected_count": {"rose": 4}, "expected_colors": {"rose": "red", "vase": "white"}, "expected_attributes": {"rose": ["identical"]}, "difficulty": "hard"}
+{"prompt": "A triangular sandwich next to a circular plate", "category": "shape", "expected_shapes": {"sandwich": "triangular", "plate": "circular"}, "expected_spatial": [["sandwich", "next to", "plate"]], "difficulty": "medium"}
+{"prompt": "A shiny metallic robot standing beside a wooden chair", "category": "texture", "expected_textures": {"robot": "metallic", "chair": "wooden"}, "expected_spatial": [["robot", "beside", "chair"]], "difficulty": "hard"}
+{"prompt": "Six yellow ducks swimming in a blue pond", "category": "count", "expected_count": {"duck": 6}, "expected_colors": {"duck": "yellow", "pond": "blue"}, "difficulty": "medium"}
+{"prompt": "A tall glass tower between two short brick buildings", "category": "spatial", "expected_spatial": [["tower", "between", "buildings"]], "expected_attributes": {"tower": ["tall"], "buildings": ["short"]}, "expected_textures": {"tower": "glass", "buildings": "brick"}, "difficulty": "hard"}
+{"prompt": "Eight purple grapes hanging from a green vine", "category": "count", "expected_count": {"grape": 8}, "expected_colors": {"grape": "purple", "vine": "green"}, "expected_spatial": [["grapes", "hanging from", "vine"]], "difficulty": "medium"}
+{"prompt": "A soft pillow on a hard wooden bench", "category": "texture", "expected_textures": {"pillow": "soft", "bench": "hard"}, "expected_spatial": [["pillow", "on", "bench"]], "difficulty": "medium"}
+{"prompt": "Two black cars parked in front of a white garage", "category": "count", "expected_count": {"car": 2}, "expected_colors": {"car": "black", "garage": "white"}, "expected_spatial": [["cars", "in front of", "garage"]], "difficulty": "medium"}
+{"prompt": "A rectangular window above a round door", "category": "shape", "expected_shapes": {"window": "rectangular", "door": "round"}, "expected_spatial": [["window", "above", "door"]], "difficulty": "medium"}
+{"prompt": "Ten tiny red ants crawling on a big green leaf", "category": "count", "expected_count": {"ant": 10}, "expected_attributes": {"ant": ["tiny"], "leaf": ["big"]}, "expected_colors": {"ant": "red", "leaf": "green"}, "expected_spatial": [["ants", "on", "leaf"]], "difficulty": "hard"}
