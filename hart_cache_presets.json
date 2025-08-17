@@ -12,7 +12,7 @@
     
     "conservative-cache": {
       "skip_stages": [256],
-      "cache_stages": [169],
+      "cache_stages": [144],
       "enable_attn_cache": true,
       "enable_mlp_cache": true,
       "threshold": 0.8,
@@ -21,8 +21,8 @@
     },
     
     "original-cache": {
-      "skip_stages": [169, 256],
-      "cache_stages": [100, 169],
+      "skip_stages": [144, 256],
+      "cache_stages": [81, 144],
       "enable_attn_cache": true,
       "enable_mlp_cache": true,
       "threshold": 0.7,
@@ -31,8 +31,8 @@
     },
     
     "aggressive-cache": {
-      "skip_stages": [64, 100, 169, 256],
-      "cache_stages": [36, 64, 100, 169],
+      "skip_stages": [49, 81, 144, 256],
+      "cache_stages": [25, 49, 81, 144],
       "enable_attn_cache": true,
       "enable_mlp_cache": true,
       "threshold": 0.6,
@@ -41,8 +41,8 @@
     },
     
     "ultra-fast": {
-      "skip_stages": [36, 64, 100, 169, 256],
-      "cache_stages": [25, 36, 64, 100, 169],
+      "skip_stages": [25, 49, 81, 144, 256, 441],
+      "cache_stages": [16, 25, 49, 81, 144, 256],
       "enable_attn_cache": true,
       "enable_mlp_cache": true,
       "threshold": 0.5,
@@ -52,8 +52,8 @@
     },
     
     "attn-only-cache": {
-      "skip_stages": [169, 256],
-      "cache_stages": [100, 169],
+      "skip_stages": [144, 256],
+      "cache_stages": [81, 144],
       "enable_attn_cache": true,
       "enable_mlp_cache": false,
       "threshold": 0.7,
@@ -62,8 +62,8 @@
     },
     
     "mlp-only-cache": {
-      "skip_stages": [169, 256],
-      "cache_stages": [100, 169],
+      "skip_stages": [144, 256],
+      "cache_stages": [81, 144],
       "enable_attn_cache": false,
       "enable_mlp_cache": true,
       "threshold": 0.7,
@@ -73,7 +73,7 @@
     
     "high-quality": {
       "skip_stages": [256],
-      "cache_stages": [169],
+      "cache_stages": [144],
       "enable_attn_cache": true,
       "enable_mlp_cache": true,
       "threshold": 0.9,
@@ -82,8 +82,8 @@
     },
     
     "memory-efficient": {
-      "skip_stages": [169, 256],
-      "cache_stages": [169],
+      "skip_stages": [144, 256],
+      "cache_stages": [144],
       "enable_attn_cache": true,
       "enable_mlp_cache": false,
       "threshold": 0.8,
@@ -92,8 +92,8 @@
     },
     
     "production-balanced": {
-      "skip_stages": [100, 169, 256],
-      "cache_stages": [64, 100, 169],
+      "skip_stages": [81, 144, 256],
+      "cache_stages": [49, 81, 144],
       "enable_attn_cache": true,
       "enable_mlp_cache": true,
       "threshold": 0.65,
@@ -105,7 +105,7 @@
     
     "research-quality": {
       "skip_stages": [],
-      "cache_stages": [169],
+      "cache_stages": [144],
       "enable_attn_cache": true,
       "enable_mlp_cache": true,
       "threshold": 0.95,
@@ -114,8 +114,8 @@
     },
     
     "demo-fast": {
-      "skip_stages": [64, 100, 169, 256],
-      "cache_stages": [36, 64, 100],
+      "skip_stages": [49, 81, 144, 256],
+      "cache_stages": [25, 49, 81],
       "enable_attn_cache": true,
       "enable_mlp_cache": true,
       "threshold": 0.55,
@@ -130,11 +130,15 @@
     "9": {"resolution": "3x3", "description": "Early stage - rarely cached"},
     "16": {"resolution": "4x4", "description": "Early-mid stage"},
     "25": {"resolution": "5x5", "description": "Mid stage - good for caching"},
-    "36": {"resolution": "6x6", "description": "Mid stage - excellent for caching"},
-    "64": {"resolution": "8x8", "description": "Mid-late stage - excellent for caching"},
-    "100": {"resolution": "10x10", "description": "Late stage - prime for caching"},
-    "169": {"resolution": "13x13", "description": "Late stage - most commonly cached"},
-    "256": {"resolution": "16x16", "description": "Final stage - often skipped"}
+    "49": {"resolution": "7x7", "description": "Mid stage - excellent for caching"},
+    "81": {"resolution": "9x9", "description": "Mid-late stage - excellent for caching"},
+    "144": {"resolution": "12x12", "description": "Late stage - prime for caching"},
+    "256": {"resolution": "16x16", "description": "Late stage - most commonly cached"},
+    "441": {"resolution": "21x21", "description": "Very late stage - often skipped"},
+    "729": {"resolution": "27x27", "description": "High-res stage - typically skipped"},
+    "1296": {"resolution": "36x36", "description": "Very high-res stage"},
+    "2304": {"resolution": "48x48", "description": "Ultra high-res stage"},
+    "4096": {"resolution": "64x64", "description": "Maximum resolution stage"}
   },
   
   "interpolation_modes": {

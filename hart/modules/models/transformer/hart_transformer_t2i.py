@@ -288,8 +288,8 @@ class HARTForT2I(PreTrainedModel):
         self.sim_path = config.sim_path
         self.cache_mlp = [None] * depth
         self.cache_attn = [None] * depth
-        self.cache_similarity_mlp = [[0.0] * 10 for _ in range(depth)]  # 10 iterations
-        self.cache_similarity_attn = [[0.0] * 10 for _ in range(depth)]
+        self.cache_similarity_mlp = [[0.0] * 15 for _ in range(depth)]  # 15 iterations (0-14)
+        self.cache_similarity_attn = [[0.0] * 15 for _ in range(depth)]
         
         # Load similarity data if path provided
         if self.sim_path and os.path.exists(self.sim_path):

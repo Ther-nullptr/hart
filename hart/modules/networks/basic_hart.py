@@ -66,11 +66,11 @@ except ImportError:
 
 # Cache helper functions for VAR-style caching
 length2iteration = {
-    1:0, 4:1, 9:2, 16:3, 25:4, 36:5, 64:6, 100:7, 169:8, 256:9,
+    1:0, 4:1, 9:2, 16:3, 25:4, 49:6, 81:7, 144:8, 256:9, 441:10, 729:11, 1296:12, 2304:13, 4096:14
 }
 
 next_patch_size = {
-    1:2, 2:3, 3:4, 4:5, 5:6, 6:8, 8:10, 10:13, 13:16
+    1:2, 2:3, 3:4, 4:5, 5:7, 7:9, 9:12, 12:16, 16:21, 21:27, 27:36, 36:48, 48:64
 }
 
 def feature_interpolate(x, mode='bilinear', align_corners=True):
