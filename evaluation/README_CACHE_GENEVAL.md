@@ -119,11 +119,26 @@ output_dir/
 ├── cache_comparison_results.json          # Overall comparison data
 ├── comparison_report.md                   # Human-readable report
 └── config_specific_dirs/
-    ├── skip_81-144_cache_49-81_thresh_0.65/
-    │   ├── evaluation_results.json        # Detailed results
-    │   ├── object_prompt_0_sample_0.png   # Generated images
-    │   └── ...
-    └── ...
+    ├── skip_81-144_cache_49-81_thresh_0.65_type_attn_mlp/
+    │   ├── CONFIG_DESCRIPTION.md          # Human-readable config description
+    │   ├── config_info.json               # Configuration summary and metadata
+    │   ├── evaluation_results.json        # Detailed evaluation results
+    │   └── generated_images/               # Generated images in standard format
+    │       ├── 00000/                      # First prompt
+    │       │   ├── metadata.jsonl          # Prompt metadata and quality metrics
+    │       │   ├── grid.png                # Grid view of all samples
+    │       │   └── samples/
+    │       │       ├── 0000.png            # First sample
+    │       │       ├── 0001.png            # Second sample (if multiple samples)
+    │       │       └── ...
+    │       ├── 00001/                      # Second prompt
+    │       │   ├── metadata.jsonl
+    │       │   ├── grid.png
+    │       │   └── samples/
+    │       │       └── 0000.png
+    │       └── ...
+    ├── skip_none_cache_none_thresh_0.7_type_none/  # No-cache baseline
+    └── skip_25-49-81-144-256-441_cache_16-25-49-81-144-256_thresh_0.5_type_attn_mlp_adaptive/  # Ultra-fast
 ```
 
 ### Key Metrics

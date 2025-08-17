@@ -327,20 +327,89 @@ class HARTCacheGenEvalEvaluator:
         # Load model with cache configuration
         model = self.load_hart_model(cache_config)
         
-        # Create output directory for this configuration
-        config_name = f"skip_{'-'.join(map(str, cache_config.skip_stages))}_cache_{'-'.join(map(str, cache_config.cache_stages))}_thresh_{cache_config.threshold}"
+        # Create detailed output directory name for this configuration
+        config_parts = []
+        if cache_config.skip_stages:
+            config_parts.append(f"skip_{'-'.join(map(str, cache_config.skip_stages))}")
+        else:
+            config_parts.append("skip_none")
+        
+        if cache_config.cache_stages:
+            config_parts.append(f"cache_{'-'.join(map(str, cache_config.cache_stages))}")
+        else:
+            config_parts.append("cache_none")
+        
+        config_parts.append(f"thresh_{cache_config.threshold}")
+        
+        # Add cache type information
+        cache_types = []
+        if cache_config.enable_attn_cache:
+            cache_types.append("attn")
+        if cache_config.enable_mlp_cache:
+            cache_types.append("mlp")
+        if cache_types:
+            config_parts.append(f"type_{'_'.join(cache_types)}")
+        else:
+            config_parts.append("type_none")
+        
+        # Add interpolation mode if not default
+        if cache_config.interpolation_mode != 'bilinear':
+            config_parts.append(f"interp_{cache_config.interpolation_mode}")
+        
+        # Add adaptive threshold flag
+        if cache_config.adaptive_threshold:
+            config_parts.append("adaptive")
+        
+        config_name = "_".join(config_parts)
         config_output_dir = os.path.join(output_dir, config_name)
         os.makedirs(config_output_dir, exist_ok=True)
         
-        results = {
+        # Create comprehensive configuration metadata
+        import datetime
+        import platform
+        import torch
+        
+        config_metadata = {
+            # Cache configuration details
             'cache_config': {
                 'skip_stages': cache_config.skip_stages,
                 'cache_stages': cache_config.cache_stages,
                 'threshold': cache_config.threshold,
                 'enable_attn_cache': cache_config.enable_attn_cache,
                 'enable_mlp_cache': cache_config.enable_mlp_cache,
-                'interpolation_mode': cache_config.interpolation_mode
+                'interpolation_mode': cache_config.interpolation_mode,
+                'adaptive_threshold': cache_config.adaptive_threshold,
+                'calibration_mode': getattr(cache_config, 'calibration_mode', 'none')
             },
+            # Evaluation metadata
+            'evaluation_metadata': {
+                'timestamp': datetime.datetime.now().isoformat(),
+                'config_name': config_name,
+                'output_directory': config_output_dir,
+                'num_categories': len(prompts_by_category),
+                'total_prompts': sum(len(prompts) for prompts in prompts_by_category.values()),
+                'batch_size': batch_size,
+                'num_samples': num_samples
+            },
+            # System information
+            'system_info': {
+                'platform': platform.platform(),
+                'python_version': platform.python_version(),
+                'torch_version': torch.__version__,
+                'cuda_available': torch.cuda.is_available(),
+                'cuda_device_count': torch.cuda.device_count() if torch.cuda.is_available() else 0,
+                'cuda_current_device': torch.cuda.current_device() if torch.cuda.is_available() else None
+            },
+            # Model information
+            'model_info': {
+                'model_path': self.model_path,
+                'detector_available': self.detector is not None,
+                'mmdet_available': MMDET_AVAILABLE
+            }
+        }
+        
+        results = {
+            **config_metadata,
             'category_results': {},
             'overall_metrics': {}
         }
@@ -353,8 +422,13 @@ class HARTCacheGenEvalEvaluator:
         performance_metrics = self.benchmark_cache_performance(model, all_prompts[:10])  # Use subset for timing
         results['performance'] = performance_metrics
         
+        # Create images output directory structure
+        images_output_dir = os.path.join(config_output_dir, "generated_images")
+        os.makedirs(images_output_dir, exist_ok=True)
+        
         # Evaluate each category
         total_quality_scores = []
+        global_prompt_idx = 0  # Global counter for prompt numbering
         
         for category, category_prompts in prompts_by_category.items():
             if not category_prompts:
@@ -372,6 +446,11 @@ class HARTCacheGenEvalEvaluator:
             for prompt_data in tqdm(category_prompts[:min(10, len(category_prompts))], desc=f"Processing {category}"):
                 prompt = prompt_data['prompt']
                 
+                # Create directory for this prompt: 00000/, 00001/, etc.
+                prompt_dir = os.path.join(images_output_dir, f"{global_prompt_idx:05d}")
+                samples_dir = os.path.join(prompt_dir, "samples")
+                os.makedirs(samples_dir, exist_ok=True)
+                
                 # Generate image
                 start_time = time.time()
                 images = self.generate_images(model, [prompt], batch_size=1, num_samples=num_samples)
@@ -379,26 +458,78 @@ class HARTCacheGenEvalEvaluator:
                 
                 category_results['generation_times'].append(generation_time)
                 
-                # Evaluate quality for each generated image
+                # Save metadata for this prompt
+                metadata = {
+                    "prompt": prompt,
+                    "category": category,
+                    "generation_time": generation_time,
+                    "num_samples": len(images),
+                    "prompt_index": global_prompt_idx,
+                    "cache_config": {
+                        "skip_stages": cache_config.skip_stages,
+                        "cache_stages": cache_config.cache_stages,
+                        "threshold": cache_config.threshold
+                    }
+                }
+                
+                if 'expected_objects' in prompt_data:
+                    metadata['expected_objects'] = prompt_data['expected_objects']
+                if 'expected_count' in prompt_data:
+                    metadata['expected_count'] = prompt_data['expected_count']
+                if 'expected_spatial' in prompt_data:
+                    metadata['expected_spatial'] = prompt_data['expected_spatial']
+                if 'expected_attributes' in prompt_data:
+                    metadata['expected_attributes'] = prompt_data['expected_attributes']
+                if 'expected_colors' in prompt_data:
+                    metadata['expected_colors'] = prompt_data['expected_colors']
+                if 'expected_shapes' in prompt_data:
+                    metadata['expected_shapes'] = prompt_data['expected_shapes']
+                if 'expected_textures' in prompt_data:
+                    metadata['expected_textures'] = prompt_data['expected_textures']
+                
+                # Save metadata.jsonl
+                metadata_file = os.path.join(prompt_dir, "metadata.jsonl")
+                with open(metadata_file, 'w') as f:
+                    json.dump(metadata, f, ensure_ascii=False)
+                
+                # Evaluate quality for each generated image and save in samples/
+                sample_quality_metrics = []
                 for img_idx, image in enumerate(images):
-                    # Save generated image
-                    img_filename = f"{category}_prompt_{len(category_results['quality_metrics'])}_sample_{img_idx}.png"
-                    image.save(os.path.join(config_output_dir, img_filename))
+                    # Save individual sample
+                    sample_filename = f"{img_idx:04d}.png"
+                    image.save(os.path.join(samples_dir, sample_filename))
                     
                     # Evaluate quality
                     quality_metrics = self.evaluate_generation_quality(image, prompt_data)
                     quality_metrics['prompt'] = prompt
                     quality_metrics['category'] = category
                     quality_metrics['generation_time'] = generation_time
+                    quality_metrics['sample_index'] = img_idx
+                    quality_metrics['prompt_index'] = global_prompt_idx
                     
+                    sample_quality_metrics.append(quality_metrics)
                     category_results['quality_metrics'].append(quality_metrics)
                     total_quality_scores.append(quality_metrics.get('detection_confidence', 0))
+                
+                # Create grid image if multiple samples
+                if len(images) > 1:
+                    self._create_grid_image(images, os.path.join(prompt_dir, "grid.png"))
+                elif len(images) == 1:
+                    # Copy single image as grid.png
+                    images[0].save(os.path.join(prompt_dir, "grid.png"))
+                
+                # Update metadata with quality metrics
+                metadata['quality_metrics'] = sample_quality_metrics
+                with open(metadata_file, 'w') as f:
+                    json.dump(metadata, f, ensure_ascii=False, indent=2)
+                
+                global_prompt_idx += 1
             
             # Calculate category averages
             if category_results['quality_metrics']:
                 avg_metrics = {}
                 for key in category_results['quality_metrics'][0].keys():
-                    if key not in ['prompt', 'category'] and isinstance(category_results['quality_metrics'][0][key], (int, float)):
+                    if key not in ['prompt', 'category', 'sample_index', 'prompt_index'] and isinstance(category_results['quality_metrics'][0][key], (int, float)):
                         values = [m[key] for m in category_results['quality_metrics'] if key in m]
                         if values:
                             avg_metrics[f'avg_{key}'] = np.mean(values)
@@ -419,12 +550,32 @@ class HARTCacheGenEvalEvaluator:
         cache_stats = model.get_cache_statistics()
         results['cache_statistics'] = cache_stats
         
-        # Save results
+        # Save configuration summary file
+        config_summary_file = os.path.join(config_output_dir, 'config_info.json')
+        config_summary = {
+            'configuration_name': config_name,
+            'description': self._generate_config_description(cache_config),
+            'cache_settings': results['cache_config'],
+            'evaluation_settings': results['evaluation_metadata'],
+            'expected_performance': self._estimate_performance_tier(cache_config)
+        }
+        with open(config_summary_file, 'w') as f:
+            json.dump(config_summary, f, indent=2, default=str)
+        
+        # Save detailed results
         results_file = os.path.join(config_output_dir, 'evaluation_results.json')
         with open(results_file, 'w') as f:
             json.dump(results, f, indent=2, default=str)
         
-        print(f"\\nConfiguration evaluation complete. Results saved to {results_file}")
+        # Create human-readable config description
+        config_desc_file = os.path.join(config_output_dir, 'CONFIG_DESCRIPTION.md')
+        with open(config_desc_file, 'w') as f:
+            f.write(self._generate_config_markdown(cache_config, config_name, results))
+        
+        print(f"\\nConfiguration evaluation complete.")
+        print(f"  Results: {results_file}")
+        print(f"  Config info: {config_summary_file}")
+        print(f"  Description: {config_desc_file}")
         
         return results
     
@@ -557,6 +708,253 @@ class HARTCacheGenEvalEvaluator:
                     f.write(f"- **Quality Priority**: Config {highest_quality + 1} for best generation quality\\n")
         
         print(f"Comparison report saved to {report_file}")
+    
+    def _generate_config_description(self, cache_config: CacheConfig) -> str:
+        """Generate a human-readable description of the cache configuration"""
+        parts = []
+        
+        # Cache aggressiveness level
+        if not cache_config.skip_stages and not cache_config.cache_stages:
+            parts.append("No caching (baseline configuration)")
+        elif len(cache_config.skip_stages) <= 1:
+            parts.append("Conservative caching")
+        elif len(cache_config.skip_stages) <= 3:
+            parts.append("Moderate caching")
+        else:
+            parts.append("Aggressive caching")
+        
+        # Skip stages description
+        if cache_config.skip_stages:
+            skip_desc = f"skips {len(cache_config.skip_stages)} stages ({cache_config.skip_stages})"
+            parts.append(skip_desc)
+        
+        # Cache stages description
+        if cache_config.cache_stages:
+            cache_desc = f"caches {len(cache_config.cache_stages)} stages ({cache_config.cache_stages})"
+            parts.append(cache_desc)
+        
+        # Threshold description
+        if cache_config.threshold >= 0.8:
+            threshold_desc = f"high similarity threshold ({cache_config.threshold})"
+        elif cache_config.threshold >= 0.6:
+            threshold_desc = f"medium similarity threshold ({cache_config.threshold})"
+        else:
+            threshold_desc = f"low similarity threshold ({cache_config.threshold})"
+        parts.append(threshold_desc)
+        
+        # Cache types
+        cache_types = []
+        if cache_config.enable_attn_cache:
+            cache_types.append("attention")
+        if cache_config.enable_mlp_cache:
+            cache_types.append("MLP")
+        
+        if cache_types:
+            parts.append(f"uses {' and '.join(cache_types)} caching")
+        
+        return " with ".join(parts) + "."
+    
+    def _estimate_performance_tier(self, cache_config: CacheConfig) -> Dict[str, str]:
+        """Estimate the performance tier of a cache configuration"""
+        # Calculate aggressiveness score
+        skip_score = len(cache_config.skip_stages) * 0.3
+        cache_score = len(cache_config.cache_stages) * 0.2
+        threshold_score = (1.0 - cache_config.threshold) * 0.5
+        
+        aggressiveness = skip_score + cache_score + threshold_score
+        
+        if aggressiveness < 0.5:
+            speed_tier = "Slow"
+            quality_tier = "Excellent"
+        elif aggressiveness < 1.0:
+            speed_tier = "Medium"
+            quality_tier = "Very Good"
+        elif aggressiveness < 2.0:
+            speed_tier = "Fast"
+            quality_tier = "Good"
+        else:
+            speed_tier = "Very Fast"
+            quality_tier = "Acceptable"
+        
+        return {
+            "speed_tier": speed_tier,
+            "quality_tier": quality_tier,
+            "aggressiveness_score": f"{aggressiveness:.2f}",
+            "recommended_use": self._get_use_case_recommendation(speed_tier, quality_tier)
+        }
+    
+    def _get_use_case_recommendation(self, speed_tier: str, quality_tier: str) -> str:
+        """Get use case recommendation based on performance tiers"""
+        if speed_tier == "Slow" and quality_tier == "Excellent":
+            return "Research and development, highest quality requirements"
+        elif speed_tier == "Medium" and quality_tier in ["Very Good", "Excellent"]:
+            return "Production deployment with balanced speed/quality"
+        elif speed_tier == "Fast":
+            return "Real-time applications, interactive demos"
+        elif speed_tier == "Very Fast":
+            return "High-throughput batch processing, speed-critical applications"
+        else:
+            return "General purpose applications"
+    
+    def _generate_config_markdown(self, cache_config: CacheConfig, config_name: str, results: Dict) -> str:
+        """Generate a markdown description file for the configuration"""
+        md_content = f"""# Cache Configuration: {config_name}
+
+## Configuration Overview
+
+**Description**: {self._generate_config_description(cache_config)}
+
+## Cache Settings
+
+| Setting | Value | Description |
+|---------|-------|-------------|
+| Skip Stages | {cache_config.skip_stages or 'None'} | Stages that completely skip processing |
+| Cache Stages | {cache_config.cache_stages or 'None'} | Stages that use cached results when similar |
+| Similarity Threshold | {cache_config.threshold} | Minimum similarity for cache reuse |
+| Attention Cache | {'Enabled' if cache_config.enable_attn_cache else 'Disabled'} | Cache attention layer outputs |
+| MLP Cache | {'Enabled' if cache_config.enable_mlp_cache else 'Disabled'} | Cache MLP layer outputs |
+| Interpolation Mode | {cache_config.interpolation_mode} | Method for feature interpolation |
+| Adaptive Threshold | {'Enabled' if cache_config.adaptive_threshold else 'Disabled'} | Dynamic threshold adjustment |
+
+## Performance Characteristics
+
+"""
+        
+        # Add performance estimates
+        perf_estimate = self._estimate_performance_tier(cache_config)
+        md_content += f"""
+### Expected Performance
+- **Speed Tier**: {perf_estimate['speed_tier']}
+- **Quality Tier**: {perf_estimate['quality_tier']}
+- **Aggressiveness Score**: {perf_estimate['aggressiveness_score']}
+
+### Recommended Use Cases
+{perf_estimate['recommended_use']}
+
+"""
+        
+        # Add evaluation metadata if available
+        if 'evaluation_metadata' in results:
+            eval_meta = results['evaluation_metadata']
+            md_content += f"""
+## Evaluation Details
+
+- **Evaluation Date**: {eval_meta.get('timestamp', 'Unknown')}
+- **Total Categories**: {eval_meta.get('num_categories', 'Unknown')}
+- **Total Prompts**: {eval_meta.get('total_prompts', 'Unknown')}
+- **Batch Size**: {eval_meta.get('batch_size', 'Unknown')}
+- **Samples per Prompt**: {eval_meta.get('num_samples', 'Unknown')}
+
+"""
+        
+        # Add system info if available
+        if 'system_info' in results:
+            sys_info = results['system_info']
+            md_content += f"""
+## System Information
+
+- **Platform**: {sys_info.get('platform', 'Unknown')}
+- **PyTorch Version**: {sys_info.get('torch_version', 'Unknown')}
+- **CUDA Available**: {sys_info.get('cuda_available', 'Unknown')}
+- **GPU Count**: {sys_info.get('cuda_device_count', 'Unknown')}
+
+"""
+        
+        md_content += f"""
+## File Structure
+
+```
+{config_name}/
+├── CONFIG_DESCRIPTION.md     # This file
+├── config_info.json          # Configuration summary and metadata
+├── evaluation_results.json   # Detailed evaluation results
+└── generated_images/          # Generated images in standard format
+    ├── 00000/                  # First prompt (category: object)
+    │   ├── metadata.jsonl      # Prompt details and quality metrics
+    │   ├── grid.png            # Grid view of all samples
+    │   └── samples/
+    │       ├── 0000.png        # Individual samples
+    │       ├── 0001.png        # (if multiple samples generated)
+    │       └── ...
+    ├── 00001/                  # Second prompt (category: count)
+    │   ├── metadata.jsonl
+    │   ├── grid.png
+    │   └── samples/
+    │       └── 0000.png
+    └── ...                     # Additional prompts numbered sequentially
+```
+
+## Metadata Format
+
+Each `metadata.jsonl` contains:
+```json
+{{
+  "prompt": "A red apple on a wooden table",
+  "category": "object",
+  "generation_time": 2.34,
+  "num_samples": 1,
+  "prompt_index": 0,
+  "cache_config": {{
+    "skip_stages": [144, 256],
+    "cache_stages": [81, 144],
+    "threshold": 0.7
+  }},
+  "expected_objects": ["apple", "table"],
+  "quality_metrics": [
+    {{
+      "detection_confidence": 0.82,
+      "object_accuracy": 0.75,
+      "sample_index": 0
+    }}
+  ]
+}}
+```
+
+## Analysis Guidelines
+
+1. **Speed vs Quality Trade-off**: Compare generation times with quality scores across prompts
+2. **Memory Usage**: Monitor memory consumption during evaluation (logged in system_info)
+3. **Category Performance**: Check which compositional aspects are most affected by caching
+4. **Cache Efficiency**: Review cache hit rates and similarity scores in cache_statistics
+5. **Visual Quality**: Use grid.png for quick overview, samples/ for detailed analysis
+
+Generated by HART Cache GenEval Evaluation Framework
+"""
+        
+        return md_content
+    
+    def _create_grid_image(self, images: List[Image.Image], output_path: str):
+        """Create a grid image from multiple samples"""
+        if not images:
+            return
+        
+        # Calculate grid dimensions
+        num_images = len(images)
+        if num_images == 1:
+            images[0].save(output_path)
+            return
+        
+        # Calculate grid size (prefer square or slightly wider)
+        cols = int(np.ceil(np.sqrt(num_images)))
+        rows = int(np.ceil(num_images / cols))
+        
+        # Get image dimensions
+        img_width, img_height = images[0].size
+        
+        # Create grid canvas
+        grid_width = cols * img_width
+        grid_height = rows * img_height
+        grid_image = Image.new('RGB', (grid_width, grid_height), color='white')
+        
+        # Place images in grid
+        for idx, img in enumerate(images):
+            row = idx // cols
+            col = idx % cols
+            x = col * img_width
+            y = row * img_height
+            grid_image.paste(img, (x, y))
+        
+        grid_image.save(output_path)
 
 
 def parse_args():
