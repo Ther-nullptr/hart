@@ -1,0 +1,195 @@
+{
+  "presets": {
+    "no-cache": {
+      "skip_stages": [],
+      "cache_stages": [],
+      "enable_attn_cache": false,
+      "enable_mlp_cache": false,
+      "threshold": 0.7,
+      "interpolation_mode": "bilinear",
+      "description": "No caching - baseline performance"
+    },
+    
+    "conservative-cache": {
+      "skip_stages": [256],
+      "cache_stages": [169],
+      "enable_attn_cache": true,
+      "enable_mlp_cache": true,
+      "threshold": 0.8,
+      "interpolation_mode": "bilinear",
+      "description": "Conservative caching for minimal quality loss"
+    },
+    
+    "original-cache": {
+      "skip_stages": [169, 256],
+      "cache_stages": [100, 169],
+      "enable_attn_cache": true,
+      "enable_mlp_cache": true,
+      "threshold": 0.7,
+      "interpolation_mode": "bilinear",
+      "description": "Original HART caching implementation"
+    },
+    
+    "aggressive-cache": {
+      "skip_stages": [64, 100, 169, 256],
+      "cache_stages": [36, 64, 100, 169],
+      "enable_attn_cache": true,
+      "enable_mlp_cache": true,
+      "threshold": 0.6,
+      "interpolation_mode": "bilinear",
+      "description": "Aggressive caching for maximum speedup"
+    },
+    
+    "ultra-fast": {
+      "skip_stages": [36, 64, 100, 169, 256],
+      "cache_stages": [25, 36, 64, 100, 169],
+      "enable_attn_cache": true,
+      "enable_mlp_cache": true,
+      "threshold": 0.5,
+      "adaptive_threshold": true,
+      "interpolation_mode": "bilinear",
+      "description": "Ultra-fast generation with adaptive thresholding"
+    },
+    
+    "attn-only-cache": {
+      "skip_stages": [169, 256],
+      "cache_stages": [100, 169],
+      "enable_attn_cache": true,
+      "enable_mlp_cache": false,
+      "threshold": 0.7,
+      "interpolation_mode": "bilinear",
+      "description": "Attention-only caching for memory efficiency"
+    },
+    
+    "mlp-only-cache": {
+      "skip_stages": [169, 256],
+      "cache_stages": [100, 169],
+      "enable_attn_cache": false,
+      "enable_mlp_cache": true,
+      "threshold": 0.7,
+      "interpolation_mode": "bilinear",
+      "description": "MLP-only caching"
+    },
+    
+    "high-quality": {
+      "skip_stages": [256],
+      "cache_stages": [169],
+      "enable_attn_cache": true,
+      "enable_mlp_cache": true,
+      "threshold": 0.9,
+      "interpolation_mode": "bicubic",
+      "description": "High quality with minimal caching"
+    },
+    
+    "memory-efficient": {
+      "skip_stages": [169, 256],
+      "cache_stages": [169],
+      "enable_attn_cache": true,
+      "enable_mlp_cache": false,
+      "threshold": 0.8,
+      "interpolation_mode": "bilinear",
+      "description": "Memory-efficient caching"
+    },
+    
+    "production-balanced": {
+      "skip_stages": [100, 169, 256],
+      "cache_stages": [64, 100, 169],
+      "enable_attn_cache": true,
+      "enable_mlp_cache": true,
+      "threshold": 0.65,
+      "adaptive_threshold": true,
+      "interpolation_mode": "bilinear",
+      "calibration_samples": 50,
+      "description": "Production-ready balanced speed/quality"
+    },
+    
+    "research-quality": {
+      "skip_stages": [],
+      "cache_stages": [169],
+      "enable_attn_cache": true,
+      "enable_mlp_cache": true,
+      "threshold": 0.95,
+      "interpolation_mode": "bicubic",
+      "description": "Research-grade quality with minimal speedup"
+    },
+    
+    "demo-fast": {
+      "skip_stages": [64, 100, 169, 256],
+      "cache_stages": [36, 64, 100],
+      "enable_attn_cache": true,
+      "enable_mlp_cache": true,
+      "threshold": 0.55,
+      "interpolation_mode": "bilinear",
+      "description": "Fast generation for demos and prototyping"
+    }
+  },
+  
+  "stage_info": {
+    "1": {"resolution": "1x1", "description": "Initial stage - never cached"},
+    "4": {"resolution": "2x2", "description": "Early stage - rarely cached"},
+    "9": {"resolution": "3x3", "description": "Early stage - rarely cached"},
+    "16": {"resolution": "4x4", "description": "Early-mid stage"},
+    "25": {"resolution": "5x5", "description": "Mid stage - good for caching"},
+    "36": {"resolution": "6x6", "description": "Mid stage - excellent for caching"},
+    "64": {"resolution": "8x8", "description": "Mid-late stage - excellent for caching"},
+    "100": {"resolution": "10x10", "description": "Late stage - prime for caching"},
+    "169": {"resolution": "13x13", "description": "Late stage - most commonly cached"},
+    "256": {"resolution": "16x16", "description": "Final stage - often skipped"}
+  },
+  
+  "interpolation_modes": {
+    "bilinear": {
+      "description": "Balanced speed and quality",
+      "speed": "fast",
+      "quality": "good",
+      "recommended_for": "general use"
+    },
+    "nearest": {
+      "description": "Fastest but lowest quality",
+      "speed": "fastest", 
+      "quality": "low",
+      "recommended_for": "maximum speed requirements"
+    },
+    "bicubic": {
+      "description": "Highest quality but slower",
+      "speed": "slow",
+      "quality": "best",
+      "recommended_for": "quality-critical applications"
+    }
+  },
+  
+  "usage_guidelines": {
+    "speed_priority": {
+      "recommended_presets": ["ultra-fast", "aggressive-cache", "demo-fast"],
+      "custom_settings": {
+        "skip_stages": [36, 64, 100, 169, 256],
+        "threshold": 0.5,
+        "adaptive_threshold": true
+      }
+    },
+    "quality_priority": {
+      "recommended_presets": ["high-quality", "research-quality"],
+      "custom_settings": {
+        "skip_stages": [256],
+        "threshold": 0.9,
+        "interpolation_mode": "bicubic"
+      }
+    },
+    "memory_priority": {
+      "recommended_presets": ["memory-efficient", "attn-only-cache"],
+      "custom_settings": {
+        "enable_mlp_cache": false,
+        "cache_stages": [169],
+        "threshold": 0.8
+      }
+    },
+    "balanced": {
+      "recommended_presets": ["original-cache", "production-balanced"],
+      "custom_settings": {
+        "skip_stages": [169, 256],
+        "cache_stages": [100, 169],
+        "threshold": 0.7
+      }
+    }
+  }
+}
